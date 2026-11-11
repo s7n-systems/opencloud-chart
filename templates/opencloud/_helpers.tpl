@@ -121,6 +121,22 @@ app.kubernetes.io/component: {{ .component }}
 {{/* Directory of the web extensions in the OpenCloud container (WEB_ASSET_APPS_PATH). */}}
 {{- define "opencloud.webExtensionsPath" -}}/var/lib/opencloud-web-extensions{{- end -}}
 
+{{/* OpenCloud's theme root on the data volume (the default of
+     WEB_ASSET_THEMES_PATH). OpenCloud serves it in front of its built-in
+     themes and writes logo uploads to its _branding directory. */}}
+{{- define "opencloud.webThemesPath" -}}/var/lib/opencloud/web/assets/themes{{- end -}}
+
+{{/* Files of the web.theme ConfigMap as a list of {key, path}. ConfigMap
+     keys cannot contain slashes, so each file gets a numbered key and the
+     volume maps it back to its path inside the theme. */}}
+{{- define "opencloud.themeFiles" -}}
+{{- $files := list (dict "key" "theme.json" "path" "theme.json") -}}
+{{- range $i, $path := keys (.Values.web.theme.files | default dict) | sortAlpha -}}
+{{- $files = append $files (dict "key" (printf "file-%d" $i) "path" $path) -}}
+{{- end -}}
+{{- $files | toYaml -}}
+{{- end -}}
+
 {{/* The proxy routes the chart adds for its companions, plus user routes. */}}
 {{- define "opencloud.proxyRoutes" -}}
 {{- $routes := list -}}
@@ -371,6 +387,34 @@ key: {{ .managedKey }}
 {{- end -}}
 {{- if and $extensions (has "web" (.Values.excludeServices | default list)) -}}
 {{- fail "web.extensions requires the web service, which excludeServices removes" -}}
+{{- end -}}
+{{- $theme := .Values.web.theme -}}
+{{- if $theme.name -}}
+{{- if not (regexMatch "^[a-z0-9]([a-z0-9-]{0,48}[a-z0-9])?$" $theme.name) -}}
+{{- fail (printf "web.theme.name %q must be lowercase letters, digits and dashes, at most 50 characters" $theme.name) -}}
+{{- end -}}
+{{- if eq $theme.name "opencloud" -}}
+{{- fail "web.theme.name opencloud is OpenCloud's built-in theme; choose another name for a custom theme" -}}
+{{- end -}}
+{{- if not $theme.json -}}
+{{- fail "web.theme.name requires web.theme.json, the content of theme.json" -}}
+{{- end -}}
+{{- if has "web" (.Values.excludeServices | default list) -}}
+{{- fail "web.theme requires the web service, which excludeServices removes" -}}
+{{- end -}}
+{{- $size := len (toJson $theme.json) -}}
+{{- range $path, $content := $theme.files | default dict -}}
+{{- if or (not (regexMatch "^[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*$" $path)) (eq $path "theme.json") -}}
+{{- fail (printf "web.theme.files: %q must be a relative path inside the theme, such as assets/logo.svg, without .. and other than theme.json" $path) -}}
+{{- end -}}
+{{- $size = add $size (div (mul (len $content) 3) 4) -}}
+{{- end -}}
+{{- /* A ConfigMap holds at most 1 MiB, its metadata included. */ -}}
+{{- if gt $size 1000000 -}}
+{{- fail (printf "web.theme is %d bytes; a ConfigMap holds at most about 1 MB. Use smaller assets, such as SVG logos." $size) -}}
+{{- end -}}
+{{- else if or $theme.json $theme.files -}}
+{{- fail "web.theme.json and web.theme.files require web.theme.name" -}}
 {{- end -}}
 {{- if and (gt (len .Values.service.ipFamilies) 1) (not (has .Values.service.ipFamilyPolicy (list "PreferDualStack" "RequireDualStack"))) -}}
 {{- fail "service.ipFamilies with two entries requires service.ipFamilyPolicy PreferDualStack or RequireDualStack" -}}

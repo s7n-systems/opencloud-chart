@@ -285,6 +285,19 @@ web:
   extensions: []
   # -- App settings, rendered into apps.yaml.
   appsConfig: {}
+  # Custom theme of the web UI: name, logos, colours and links. See "Theme"
+  # in the README. Empty name keeps OpenCloud's built-in theme.
+  theme:
+    # -- Directory name of the theme, e.g. "example". Not "opencloud", the
+    # built-in theme.
+    name: ""
+    # -- Content of theme.json. Start from OpenCloud's own theme.json and
+    # change what you need.
+    json: {}
+    # -- Further theme files as path inside the theme -> base64 content, e.g.
+    # {"assets/logo.svg": "PHN2Zy..."}. theme.json and these files must stay
+    # below about 1 MB together, the size limit of a ConfigMap.
+    files: {}
 
 # Exposes the proxy's debug endpoint (/metrics on port 9205) to Prometheus, in
 # topology split also the storage pod's (port 9159).
