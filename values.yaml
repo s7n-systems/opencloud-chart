@@ -30,11 +30,11 @@ image:
   repository: "opencloudeu/opencloud-rolling"
   # -- Image tag, kept in sync with the digest by Renovate.
   # @default -- pinned, see values.yaml
-  tag: "9.0.0"
+  tag: "9.1.0"
   # -- Multi-arch index digest of the tag. Takes precedence over the tag;
   # clear it to float on the tag instead.
   # @default -- pinned, see values.yaml
-  digest: "sha256:bd57f039d0dd3df510fb25f178beefdf0b1f049097285feead607824460e6506"
+  digest: "sha256:f902f3cb5c247e3780dc133476c4c4f8d3377a638f15734d1d926c5f011c1fa7"
   pullPolicy: "IfNotPresent"
   pullSecrets: []
 
@@ -390,6 +390,32 @@ nats:
   usernameSecretKey: "username"
   passwordSecretKey: "password"
 
+# Ingress NetworkPolicies for the OpenCloud pods. They allow the web port
+# and, with metrics.enabled, the debug port, and in topology split the
+# internal service ports only between this release's OpenCloud pods. Health
+# probes come from the node and are always allowed. Needs a network plugin
+# that enforces NetworkPolicies. Outbound traffic is not restricted.
+networkPolicy:
+  # -- Renders the policies. Recommended with topology split, where about 40
+  # internal service ports otherwise accept connections from any pod.
+  enabled: false
+  # -- Peers allowed to reach the web port 9200, as NetworkPolicy `from`
+  # entries, e.g. the Ingress controller's namespace. Empty allows any source.
+  # Companions that call the public URL through hostAliases pointing at the
+  # Service (yjs, office servers) must be included.
+  ingressFrom: []
+  # -- Peers allowed to scrape /metrics. Empty allows any source.
+  metricsFrom: []
+  nats:
+    # -- Labels of the external NATS pods, which must run in the release
+    # namespace (nats.address without another namespace). When set
+    # (topology split), a policy limits their client port to this release's
+    # OpenCloud pods. Only for a NATS that serves this release alone.
+    podSelector: {}
+    clientPort: 4222
+    clusterPort: 6222
+    monitorPort: 8222
+
 # OpenCloud keeps its configuration and generated secrets in /etc/opencloud
 # and all state (idm, NATS, search index, metadata and, unless S3 is used,
 # files) in /var/lib/opencloud. Disabling persistence loses everything on
@@ -504,7 +530,7 @@ radicale:
     # -- Multi-arch index digest of the tag. Takes precedence over the tag;
     # clear it to float on the tag instead.
     # @default -- pinned, see values.yaml
-    digest: "sha256:35e74785140b24ab7009232bf426ef4e3964e7016d21eebf1a822fb7b212549d"
+    digest: "sha256:95e6f17e3f606847d140780a57b654a755219bb56bbe94e6cf96e3e118964328"
     pullPolicy: "IfNotPresent"
     pullSecrets: []
   # -- Replaces the generated Radicale configuration file entirely when set.

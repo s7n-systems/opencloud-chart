@@ -2,6 +2,14 @@
 
 Before an upgrade, back up config and data volumes, external service secrets and any S3 data. Test restoration. Review upstream application release notes as well as chart changes.
 
+## Chart 0.5.0: network policies
+
+- **New:** `networkPolicy.enabled` adds ingress NetworkPolicies for the OpenCloud pods. Off by default; recommended with `topology: split`. See [Security](../README.md#security).
+- **New:** `networkPolicy.nats.podSelector` limits an external NATS in the release namespace to this release's OpenCloud pods. The chart rejects it when `nats.address` is a Kubernetes service name in another namespace.
+- **Content Security Policy:** `media-src` allows `blob:`, as upstream does since OpenCloud 9.1, for motion photo playback. With `checkForUpdates: false`, `https://update.opencloud.eu/` is no longer allowed in `connect-src`.
+- **OpenCloud 9.1.0:** security fixes in the web UI and newer Go dependencies; no changed settings. Read the upstream [release notes](https://github.com/opencloud-eu/opencloud/releases/tag/v9.1.0).
+- **Images:** Radicale v3.9.0 pinned to a newer build of the same version.
+
 ## Chart 0.4.0: web extensions
 
 - **New:** `web.extensions` installs web apps from images. See [Web extensions](../README.md#web-extensions).

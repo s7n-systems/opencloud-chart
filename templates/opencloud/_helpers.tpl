@@ -141,19 +141,23 @@ app.kubernetes.io/component: {{ .component }}
 {{- define "opencloud.csp" -}}
 {{- $d := dict
   "child-src" (list "'self'")
-  "connect-src" (list "'self'" "blob:" "https://raw.githubusercontent.com/opencloud-eu/awesome-apps/" "https://update.opencloud.eu/")
+  "connect-src" (list "'self'" "blob:" "https://raw.githubusercontent.com/opencloud-eu/awesome-apps/")
   "default-src" (list "'none'")
   "font-src" (list "'self'")
   "frame-ancestors" (list "'self'")
   "frame-src" (list "'self'" "blob:" "https://embed.diagrams.net/")
   "img-src" (list "'self'" "data:" "blob:" "https://raw.githubusercontent.com/opencloud-eu/awesome-apps/")
   "manifest-src" (list "'self'")
-  "media-src" (list "'self'")
+  "media-src" (list "'self'" "blob:")
   "object-src" (list "'self'" "blob:")
   "script-src" (list "'self'" "'unsafe-inline'")
   "style-src" (list "'self'" "'unsafe-inline'" "blob:")
   "worker-src" (list "'self'" "blob:")
 -}}
+{{- /* The web UI asks the update server only with checkForUpdates. */ -}}
+{{- if .Values.checkForUpdates -}}
+{{- $_ := set $d "connect-src" (append (index $d "connect-src") "https://update.opencloud.eu/") -}}
+{{- end -}}
 {{- if and .Values.collaboration.enabled .Values.collaboration.app.url -}}
 {{- $office := printf "%s/" (include "opencloud.origin" .Values.collaboration.app.url) -}}
 {{- $_ := set $d "frame-src" (append (index $d "frame-src") $office) -}}

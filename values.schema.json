@@ -804,6 +804,54 @@
         }
       }
     },
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "ingressFrom": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "metricsFrom": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "nats": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "podSelector": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "clientPort": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            },
+            "clusterPort": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            },
+            "monitorPort": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            }
+          }
+        }
+      }
+    },
     "persistence": {
       "type": "object",
       "additionalProperties": false,
