@@ -1,0 +1,27 @@
+{{- with .Values.web.theme }}
+{{- if .name }}
+{{- $ctx := dict "component" "theme" "context" $ }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "opencloud.componentFullname" $ctx }}
+  namespace: {{ $.Release.Namespace | quote }}
+  labels:
+    {{- include "opencloud.componentLabels" $ctx | nindent 4 }}
+  {{- with $.Values.additionalAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+data:
+  theme.json: |
+    {{- toPrettyJson .json | nindent 4 }}
+{{- with .files }}
+binaryData:
+  {{- range $file := include "opencloud.themeFiles" $ | fromYamlArray }}
+  {{- if ne $file.key "theme.json" }}
+  {{ $file.key }}: {{ index $.Values.web.theme.files $file.path | quote }}
+  {{- end }}
+  {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

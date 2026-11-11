@@ -51,6 +51,19 @@ proxy:
       backend: "http://custom.example.svc.cluster.local:8080"
       unprotected: true
 web:
+  theme:
+    name: "example"
+    json:
+      common:
+        name: "Example Cloud"
+        logo: "themes/example/assets/logo.svg"
+      clients:
+        web:
+          defaults:
+            logo: "themes/example/assets/logo.svg"
+            favicon: "themes/example/assets/logo.svg"
+    files:
+      assets/logo.svg: "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMCAxMCI+PHJlY3Qgd2lkdGg9IjEwIiBoZWlnaHQ9IjEwIi8+PC9zdmc+"
   extensions:
     - name: "unzip"
       image:

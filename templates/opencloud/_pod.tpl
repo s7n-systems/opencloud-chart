@@ -10,8 +10,10 @@
 {{- $fullname := include "opencloud.fullname" $ctx }}
 {{- /* Web extensions go only to pods that run the web service. */}}
 {{- $extensions := list }}
+{{- $theme := "" }}
 {{- if eq (include "opencloud.runsWeb" (dict "role" $role "context" $ctx)) "true" }}
 {{- $extensions = $ctx.Values.web.extensions | default list }}
+{{- $theme = $ctx.Values.web.theme.name }}
 {{- end }}
 {{- $images := list $ctx.Values.image }}
 {{- range $extensions }}{{- $images = append $images .image }}{{- end }}
@@ -30,11 +32,14 @@
       labels:
         {{- include "opencloud.componentPodLabels" (dict "component" (ternary "frontend" "server" $frontend) "podLabels" $podLabels "context" $ctx) | nindent 8 }}
       annotations:
-        {{- with (omit $podAnnotations "checksum/config" "checksum/secret") }}
+        {{- with (omit $podAnnotations "checksum/config" "checksum/secret" "checksum/theme") }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
         checksum/config: {{ include (print $ctx.Template.BasePath "/opencloud/configmap.yaml") $ctx | sha256sum }}
         checksum/secret: {{ include (print $ctx.Template.BasePath "/opencloud/secret.yaml") $ctx | sha256sum }}
+        {{- if $theme }}
+        checksum/theme: {{ include (print $ctx.Template.BasePath "/opencloud/theme.yaml") $ctx | sha256sum }}
+        {{- end }}
     spec:
       serviceAccountName: {{ include "opencloud.serviceAccountName" $ctx }}
       automountServiceAccountToken: {{ $ctx.Values.serviceAccount.automountServiceAccountToken }}
@@ -60,7 +65,7 @@
       topologySpreadConstraints: {{- toYaml . | nindent 8 }}
       {{- end }}
       {{- $external := eq (include "opencloud.externalServiceSecrets" $ctx) "true" }}
-      {{- if or (not $external) $extensions $ctx.Values.extraInitContainers }}
+      {{- if or (not $external) $extensions $theme $ctx.Values.extraInitContainers }}
       initContainers:
         {{- if not $external }}
         # Generates /etc/opencloud/opencloud.yaml with random service secrets on the
@@ -138,6 +143,36 @@
           resources:
             {{- toYaml $ctx.Values.initResources | nindent 12 }}
         {{- end }}
+        {{- if $theme }}
+        {{- $target := printf "%s/%s" (include "opencloud.webThemesPath" $ctx) $theme }}
+        # Copies the theme into OpenCloud's theme root on the data volume. The root
+        # stays writable, because an admin's logo upload goes to _branding there.
+        - name: install-theme
+          image: {{ include "opencloud.image" $ctx | quote }}
+          imagePullPolicy: {{ $ctx.Values.image.pullPolicy }}
+          {{- if $ctx.Values.containerSecurityContext.enabled }}
+          securityContext:
+            {{- omit $ctx.Values.containerSecurityContext "enabled" | toYaml | nindent 12 }}
+          {{- end }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              rm -rf {{ $target }}
+              {{- range include "opencloud.themeFiles" $ctx | fromYamlArray }}
+              mkdir -p {{ dir (printf "%s/%s" $target .path) }}
+              cp -L /theme/{{ .path }} {{ $target }}/{{ .path }}
+              {{- end }}
+              echo "web theme {{ $theme }} installed"
+          volumeMounts:
+            - name: web-theme
+              mountPath: /theme
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/opencloud
+          resources:
+            {{- toYaml $ctx.Values.initResources | nindent 12 }}
+        {{- end }}
         {{- with $ctx.Values.extraInitContainers }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -164,6 +199,11 @@
       {{- end }}
       {{- if and $extensions (not (has "WEB_ASSET_APPS_PATH" $names)) }}
       {{- $env = append $env (dict "name" "WEB_ASSET_APPS_PATH" "value" (include "opencloud.webExtensionsPath" $ctx)) }}
+      {{- end }}
+      {{- if $theme }}
+      {{- if not (has "WEB_UI_THEME_PATH" $names) }}
+      {{- $env = append $env (dict "name" "WEB_UI_THEME_PATH" "value" (printf "/themes/%s/theme.json" $theme)) }}
+      {{- end }}
       {{- end }}
       {{- $env = concat $env $overrides }}
       {{- $envFrom := list }}
@@ -273,6 +313,16 @@
         {{- if $extensions }}
         - name: web-extensions
           emptyDir: {}
+        {{- end }}
+        {{- if $theme }}
+        - name: web-theme
+          configMap:
+            name: {{ include "opencloud.componentFullname" (dict "component" "theme" "context" $ctx) }}
+            items:
+              {{- range include "opencloud.themeFiles" $ctx | fromYamlArray }}
+              - key: {{ .key | quote }}
+                path: {{ .path | quote }}
+              {{- end }}
         {{- end }}
         {{- if $frontend }}
         # Service secrets come from the environment; /var/lib/opencloud only

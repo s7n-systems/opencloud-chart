@@ -42,7 +42,7 @@ The chart deploys OpenCloud as a single-process StatefulSet with persistent conf
 - [Configuration](#configuration)
   - [Images](#images) · [Credentials](#credentials) · [Identity](#identity) · [Service secrets](#service-secrets)
   - [Storage](#storage) · [Scaling](#scaling) · [Networking](#networking) · [Web office](#web-office) · [Sharing](#sharing)
-  - [Optional services](#optional-services) · [Web extensions](#web-extensions) · [Monitoring](#monitoring) · [Security](#security)
+  - [Optional services](#optional-services) · [Web extensions](#web-extensions) · [Theme](#theme) · [Monitoring](#monitoring) · [Security](#security)
 - [Operations](#operations)
 - [Development](#development)
 - [Values](#values)
@@ -54,7 +54,7 @@ The chart deploys OpenCloud as a single-process StatefulSet with persistent conf
 | --- | --- |
 | **Storage** | Local files or S3-compatible object storage, with persistent local metadata |
 | **Identity** | Built-in identity services or external OIDC, with optional external LDAP and configurable role mapping |
-| **Collaboration** | yjs editing, external WOPI office integration, optional Radicale and Apache Tika, web extensions from pinned images |
+| **Collaboration** | yjs editing, external WOPI office integration, optional Radicale and Apache Tika, web extensions from pinned images, custom web themes |
 | **Scaling** | One pod for small installations, or a storage pod plus a horizontally scalable frontend with autoscaling and a PodDisruptionBudget; experimentally, several storage pods on one ReadWriteMany volume |
 | **Exposure** | Ingress or Gateway API HTTPRoute; configurable proxy routes and Content Security Policy |
 | **Security** | Non-root containers, read-only root filesystems, dropped capabilities, no ServiceAccount token and images pinned by digest |
@@ -102,7 +102,7 @@ ingress:
 helm install opencloud . --namespace opencloud -f my-values.yaml
 ```
 
-Bitnami Common is vendored in `charts/`, so a checkout needs no dependency download. To install a published version, replace `.` with `oci://ghcr.io/s7n-systems/charts/opencloud` and add `--version 0.5.0`.
+Bitnami Common is vendored in `charts/`, so a checkout needs no dependency download. To install a published version, replace `.` with `oci://ghcr.io/s7n-systems/charts/opencloud` and add `--version 0.6.0`.
 
 The chart validates required settings and credential references during rendering. It cannot verify that Secrets exist, storage can be provisioned or external services are reachable. For an example with Keycloak, S3, SMTP and Collabora, see [examples/keycloak-s3.yaml](examples/keycloak-s3.yaml).
 
@@ -111,7 +111,7 @@ The chart validates required settings and credential references during rendering
 The release workflow signs published chart digests with cosign 3, which stores the signature as an OCI referrer in the new bundle format; verify with cosign 3 or newer (cosign 2 reports "no signatures found"):
 
 ```sh
-cosign verify ghcr.io/s7n-systems/charts/opencloud:0.5.0 \
+cosign verify ghcr.io/s7n-systems/charts/opencloud:0.6.0 \
   --certificate-identity-regexp '^https://github\.com/s7n-systems/opencloud-chart/\.github/workflows/release\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
@@ -275,6 +275,7 @@ These settings govern passwords, not whether public links may be created. The ch
 | `yjs.enabled` (default `true`) | Real-time collaborative editing in the web UI through the bundled yjs server. |
 | `antivirus.enabled` | Scans uploads through an external ClamAV (`clamavSocket: tcp://host:3310`) or ICAP server. Keep the scanner's stream limit at least `antivirus.maxScanSize`. |
 | `web.extensions` | Web extensions installed from images. See [Web extensions](#web-extensions). |
+| `web.theme` | A custom theme for the web UI: name, logos, colours and links. See [Theme](#theme). |
 | `csp.extraDirectives` | Additional Content Security Policy sources, for example for web extensions that embed other sites. |
 
 ### Web extensions
@@ -311,6 +312,36 @@ web:
 Apps like `draw-io` and `maps` load content from external servers. They need `csp.extraDirectives`.
 
 With `web.extensions` set, `WEB_ASSET_APPS_PATH` points to the chart's directory. Apps copied by hand to `/var/lib/opencloud/web/assets/apps` are then no longer served.
+
+### Theme
+
+`web.theme` adds a custom theme for the web UI: product name, logos, favicon, colours and links to imprint and privacy pages. OpenCloud serves it next to its built-in theme, which stays available.
+
+```yaml
+web:
+  theme:
+    name: "example"
+    json:            # content of theme.json
+      common:
+        name: "Example Cloud"
+        logo: "themes/example/assets/logo.svg"
+      clients:
+        web:
+          defaults:
+            logo: "themes/example/assets/logo.svg"
+            favicon: "themes/example/assets/favicon.svg"
+    files:           # path inside the theme -> base64 content
+      assets/logo.svg: "PHN2ZyB4bWxucz0..."
+      assets/favicon.svg: "PHN2ZyB4bWxucz0..."
+```
+
+- Start from OpenCloud's own [theme.json](https://github.com/opencloud-eu/opencloud/blob/main/services/web/assets/themes/opencloud/theme.json) and change what you need, for example the colours of the light and dark themes. OpenCloud adds its defaults, such as the share role labels, to keys the theme leaves out. Compare the theme with upstream when you upgrade OpenCloud, since new versions can add keys.
+- Paths in `theme.json` start with `themes/<name>/`.
+- The chart stores the theme in a ConfigMap, which holds at most 1 MiB. `theme.json` and the files must stay below about 1 MB together; SVG logos fit easily.
+- On every start, an init container copies the theme to `web/assets/themes/<name>` on the data volume, OpenCloud's own theme directory. That directory stays writable, so a logo an administrator uploads in the web UI still works and takes precedence over the theme's logo. Uploaded logos must be PNG, JPEG or GIF.
+- `name` must not be `opencloud`, the built-in theme.
+- Only pods that run `web` get the theme: the server pod, or the frontend pods in `topology: split`. A theme change rolls these pods. In `topology: split` the frontends keep no data volume, so a logo uploaded in the web UI stays on one frontend pod until it restarts: set the logo in the theme instead.
+- The desktop and mobile apps are not themed by the server.
 
 ### Monitoring
 
@@ -679,6 +710,9 @@ Push a `vX.Y.Z` tag matching `version` in `Chart.yaml` to run CI, package the ch
 | topologySpreadConstraints | list | `[]` |  |
 | web.appsConfig | object | `{}` | App settings, rendered into apps.yaml. |
 | web.extensions | list | `[]` | Web apps to install from images. See "Web extensions" in the README. |
+| web.theme.files | object | `{}` | Further theme files as path inside the theme -> base64 content, e.g. {"assets/logo.svg": "PHN2Zy..."}. theme.json and these files must stay below about 1 MB together, the size limit of a ConfigMap. |
+| web.theme.json | object | `{}` | Content of theme.json. Start from OpenCloud's own theme.json and change what you need. |
+| web.theme.name | string | `""` | Directory name of the theme, e.g. "example". Not "opencloud", the built-in theme. |
 | yjs.affinity | object | `{}` |  |
 | yjs.containerSecurityContext.allowPrivilegeEscalation | bool | `false` |  |
 | yjs.containerSecurityContext.capabilities.drop[0] | string | `"ALL"` |  |

@@ -1,5 +1,6 @@
 """Render checks: python3 tests/render.py (requires Helm and PyYAML)."""
 from pathlib import Path
+import base64
 import os
 import json
 import subprocess
@@ -864,6 +865,92 @@ class ChartChecks(unittest.TestCase):
         self.assertIn('needs image.tag or image.digest', render({'web': {'extensions': [{'name': 'unzip', 'image': {'repository': 'x/y'}}]}}, succeeds=False))
         render({'web': {'extensions': [{**self.UNZIP, 'path': '/web/apps/unzip'}]}}, succeeds=False)
         render({'web': {'extensions': [{'name': 'unzip', 'image': {'tag': 'unzip-2.2.1'}}]}}, succeeds=False)
+
+    LOGO = base64.b64encode(b'<svg xmlns="http://www.w3.org/2000/svg"/>').decode()
+    THEME = {'name': 'example', 'json': {'common': {'name': 'Example Cloud', 'logo': 'themes/example/assets/logo.svg'}},
+             'files': {'assets/logo.svg': LOGO, 'assets/favicon.svg': LOGO}}
+
+    def assert_theme(self, pod, theme):
+        c = pod['containers'][0]
+        variables = {e['name']: e.get('value') for e in c['env']}
+        volumes = {v['name']: v for v in pod['volumes']}
+        inits = {i['name']: i for i in pod.get('initContainers', [])}
+        # The theme root stays OpenCloud's writable default: logo uploads go to its _branding directory.
+        self.assertNotIn('WEB_ASSET_THEMES_PATH', variables)
+        self.assertNotIn('web-theme', {m['name'] for m in c['volumeMounts']})
+        if not theme:
+            self.assertNotIn('WEB_UI_THEME_PATH', variables)
+            self.assertNotIn('web-theme', volumes)
+            self.assertNotIn('install-theme', inits)
+            return
+        self.assertEqual(variables['WEB_UI_THEME_PATH'], f'/themes/{theme}/theme.json')
+        install = inits['install-theme']
+        self.assertEqual(install['image'], c['image'])
+        self.assertTrue(install['securityContext']['readOnlyRootFilesystem'])
+        self.assertEqual({m['name']: m['mountPath'] for m in install['volumeMounts']}, {'web-theme': '/theme', 'data': '/var/lib/opencloud'})
+        script = install['command'][2]
+        target = f'/var/lib/opencloud/web/assets/themes/{theme}'
+        self.assertIn(f'rm -rf {target}\n', script)
+        self.assertIn(f'cp -L /theme/theme.json {target}/theme.json', script)
+        return volumes['web-theme']['configMap'], script
+
+    def test_web_theme(self):
+        statefulset = workload(render())['spec']['template']
+        self.assert_theme(statefulset['spec'], None)
+        self.assertNotIn('checksum/theme', statefulset['metadata']['annotations'])
+        docs = render({'web': {'theme': self.THEME}})
+        config, script = self.assert_theme(workload(docs)['spec']['template']['spec'], 'example')
+        self.assertEqual(config['name'], 'opencloud-theme')
+        self.assertIn('mkdir -p /var/lib/opencloud/web/assets/themes/example/assets\n'
+                      'cp -L /theme/assets/logo.svg /var/lib/opencloud/web/assets/themes/example/assets/logo.svg', script)
+        # Numbered keys map back to the paths inside the theme, since ConfigMap keys cannot hold slashes.
+        self.assertEqual(config['items'], [{'key': 'theme.json', 'path': 'theme.json'}, {'key': 'file-0', 'path': 'assets/favicon.svg'},
+                                           {'key': 'file-1', 'path': 'assets/logo.svg'}])
+        cm = find(docs, 'ConfigMap', 'opencloud-theme')
+        self.assertEqual(json.loads(cm['data']['theme.json']), self.THEME['json'])
+        self.assertEqual(base64.b64decode(cm['binaryData']['file-1']), b'<svg xmlns="http://www.w3.org/2000/svg"/>')
+        # A theme change rolls the pods.
+        annotations = lambda d: workload(d)['spec']['template']['metadata']['annotations']['checksum/theme']
+        changed = render({'web': {'theme': {**self.THEME, 'json': {'common': {'name': 'Other'}}}}})
+        self.assertNotEqual(annotations(docs), annotations(changed))
+        # theme.json alone, without further files.
+        docs = render({'web': {'theme': {'name': 'plain', 'json': {'common': {'name': 'Plain'}}}}})
+        self.assertEqual(self.assert_theme(workload(docs)['spec']['template']['spec'], 'plain')[0]['items'], [{'key': 'theme.json', 'path': 'theme.json'}])
+        self.assertNotIn('binaryData', find(docs, 'ConfigMap', 'opencloud-theme'))
+        # Explicit variables win, like every other chart variable.
+        docs = render({'web': {'theme': self.THEME}, 'extraEnv': {'WEB_UI_THEME_PATH': '/themes/opencloud/theme.json'}})
+        self.assertEqual(env(docs)['WEB_UI_THEME_PATH']['value'], '/themes/opencloud/theme.json')
+
+    def test_web_theme_split(self):
+        docs = self.split({'web': {'theme': self.THEME}})
+        frontend = find(docs, 'Deployment', 'opencloud-frontend')['spec']['template']
+        self.assert_theme(frontend['spec'], 'example')
+        self.assertIn('checksum/theme', frontend['metadata']['annotations'])
+        # The storage pods do not run web.
+        storage = workload(docs)['spec']['template']
+        self.assert_theme(storage['spec'], None)
+        self.assertNotIn('checksum/theme', storage['metadata']['annotations'])
+
+    def test_web_theme_rejected(self):
+        for theme, message in [
+            ({'name': 'example'}, 'requires web.theme.json'),
+            ({'name': 'opencloud', 'json': {'a': 1}}, 'built-in theme'),
+            ({'json': {'a': 1}}, 'require web.theme.name'),
+            ({'files': {'assets/logo.svg': self.LOGO}}, 'require web.theme.name'),
+            ({**self.THEME, 'files': {'../escape.svg': self.LOGO}}, 'relative path'),
+            ({**self.THEME, 'files': {'/abs.svg': self.LOGO}}, 'relative path'),
+            ({**self.THEME, 'files': {'assets/../x.svg': self.LOGO}}, 'relative path'),
+            ({**self.THEME, 'files': {'theme.json': self.LOGO}}, 'other than theme.json'),
+            ({**self.THEME, 'files': {'assets/big.png': 'A' * 1400000}}, 'at most about 1 MB'),
+        ]:
+            with self.subTest(message=message, theme=theme):
+                self.assertIn(message, render({'web': {'theme': theme}}, succeeds=False))
+        self.assertIn('requires the web service', render({'web': {'theme': self.THEME}, 'excludeServices': ['web']}, succeeds=False))
+        for invalid in [{'name': 'Example', 'json': {'a': 1}}, {'name': 'ex/ample', 'json': {'a': 1}},
+                        {**self.THEME, 'files': {'assets/logo.svg': 'not base64!'}}, {**self.THEME, 'bogus': 1}] + [
+                {**self.THEME, 'files': {'assets/logo.svg': bad}} for bad in ('A', 'AAA', 'AAAAA', 'AA=A', 'AA===', 'AAAA\nAAAA')]:
+            with self.subTest(values=invalid):
+                render({'web': {'theme': invalid}}, succeeds=False)
 
 
 if __name__ == '__main__':

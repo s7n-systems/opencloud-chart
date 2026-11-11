@@ -2,6 +2,10 @@
 
 Before an upgrade, back up config and data volumes, external service secrets and any S3 data. Test restoration. Review upstream application release notes as well as chart changes.
 
+## Chart 0.6.0: themes
+
+- **New:** `web.theme` adds a custom theme for the web UI from values. See [Theme](../README.md#theme). Without it nothing changes.
+
 ## Chart 0.5.0: network policies
 
 - **New:** `networkPolicy.enabled` adds ingress NetworkPolicies for the OpenCloud pods. Off by default; recommended with `topology: split`. See [Security](../README.md#security).
