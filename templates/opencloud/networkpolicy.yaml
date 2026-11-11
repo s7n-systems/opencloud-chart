@@ -1,0 +1,113 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $split := eq (include "opencloud.split" .) "true" }}
+{{- $np := .Values.networkPolicy }}
+{{- /* Every OpenCloud pod of this release, whatever its role. */}}
+{{- $openCloudPods := dict "podSelector" (dict
+      "matchLabels" (include "common.labels.matchLabels" . | fromYaml)
+      "matchExpressions" (list (dict "key" "app.kubernetes.io/component" "operator" "In" "values" (list "server" "frontend")))) }}
+{{- $internalPorts := list }}
+{{- range $service, $port := include "opencloud.bindPorts" . | fromYaml }}
+{{- $internalPorts = append $internalPorts (dict "protocol" "TCP" "port" (int $port)) }}
+{{- end }}
+{{- $roles := list (dict "component" "server" "role" (include "opencloud.statefulRole" .)) }}
+{{- if $split }}{{- $roles = append $roles (dict "component" "frontend" "role" "frontend") }}{{- end }}
+{{- range $roles }}
+{{- $ctx := dict "component" .component "context" $ }}
+{{- $proxy := ne .role "storage" }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "opencloud.componentFullname" $ctx }}
+  namespace: {{ $.Release.Namespace | quote }}
+  labels:
+    {{- include "opencloud.componentLabels" $ctx | nindent 4 }}
+  {{- with $.Values.additionalAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "opencloud.componentSelectorLabels" $ctx | nindent 6 }}
+  policyTypes:
+    - Ingress
+  # Health probes come from the node and are always allowed.
+  ingress:
+    {{- if $proxy }}
+    # Web traffic, from the Ingress controller or Gateway.
+    - ports:
+        - protocol: TCP
+          port: 9200
+      {{- with $np.ingressFrom }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- end }}
+    {{- if $.Values.metrics.enabled }}
+    # /metrics on the debug port.
+    - ports:
+        - protocol: TCP
+          port: {{ include "opencloud.roleDebugPort" (dict "role" .role "context" $) }}
+      {{- with $np.metricsFrom }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- end }}
+    {{- if $split }}
+    # The services call each other directly on the pod addresses, in both
+    # directions and across all pods of this release.
+    - from:
+        - {{ toYaml $openCloudPods | nindent 10 | trim }}
+      ports:
+        {{- toYaml $internalPorts | nindent 8 }}
+    {{- end }}
+{{- end }}
+{{- with $np.nats.podSelector }}
+{{- if $split }}
+---
+# The external NATS: only this release's OpenCloud pods may connect as
+# clients. Use it only for a NATS that serves this release alone.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "opencloud.componentFullname" (dict "component" "nats-clients" "context" $) }}
+  namespace: {{ $.Release.Namespace | quote }}
+  labels:
+    {{- include "opencloud.componentLabels" (dict "component" "nats" "context" $) | nindent 4 }}
+  {{- with $.Values.additionalAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- toYaml . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - {{ toYaml $openCloudPods | nindent 10 | trim }}
+      ports:
+        - protocol: TCP
+          port: {{ $np.nats.clientPort }}
+    # Routes between the NATS servers of the cluster.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- toYaml . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ $np.nats.clusterPort }}
+    {{- if $.Values.metrics.enabled }}
+    - ports:
+        - protocol: TCP
+          port: {{ $np.nats.monitorPort }}
+      {{- with $np.metricsFrom }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

@@ -70,7 +70,7 @@ The chart deploys OpenCloud as a single-process StatefulSet with persistent conf
 - External services for the integrations you enable: OIDC/LDAP, S3, SMTP, an office server or an antivirus scanner.
 - For `topology: split`: an external NATS cluster with JetStream, and the metrics API (for example metrics-server) when the frontend autoscales.
 - For several storage pods (`persistence.data.shared`): a ReadWriteMany storage class whose file system supports extended attributes and `flock` across nodes, for example NFS 4.2.
-- Optional: Gateway API CRDs for HTTPRoute, Prometheus Operator CRDs for ServiceMonitor, and a NetworkPolicy-capable CNI for Radicale's access restriction.
+- Optional: Gateway API CRDs for HTTPRoute, Prometheus Operator CRDs for ServiceMonitor, and a NetworkPolicy-capable CNI for Radicale's access restriction and `networkPolicy`.
 
 ## Install
 
@@ -102,7 +102,7 @@ ingress:
 helm install opencloud . --namespace opencloud -f my-values.yaml
 ```
 
-Bitnami Common is vendored in `charts/`, so a checkout needs no dependency download. To install a published version, replace `.` with `oci://ghcr.io/s7n-systems/charts/opencloud` and add `--version 0.4.0`.
+Bitnami Common is vendored in `charts/`, so a checkout needs no dependency download. To install a published version, replace `.` with `oci://ghcr.io/s7n-systems/charts/opencloud` and add `--version 0.5.0`.
 
 The chart validates required settings and credential references during rendering. It cannot verify that Secrets exist, storage can be provisioned or external services are reachable. For an example with Keycloak, S3, SMTP and Collabora, see [examples/keycloak-s3.yaml](examples/keycloak-s3.yaml).
 
@@ -111,7 +111,7 @@ The chart validates required settings and credential references during rendering
 The release workflow signs published chart digests with cosign 3, which stores the signature as an OCI referrer in the new bundle format; verify with cosign 3 or newer (cosign 2 reports "no signatures found"):
 
 ```sh
-cosign verify ghcr.io/s7n-systems/charts/opencloud:0.4.0 \
+cosign verify ghcr.io/s7n-systems/charts/opencloud:0.5.0 \
   --certificate-identity-regexp '^https://github\.com/s7n-systems/opencloud-chart/\.github/workflows/release\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
@@ -326,7 +326,17 @@ All containers run as non-root with a read-only root filesystem, `RuntimeDefault
 
 Radicale trusts the proxy's `X-Remote-User` header. When enabled, a NetworkPolicy allows port 5232 only from this release's proxy pods in the same namespace. Use a network plugin that enforces it, and avoid broader allow rules from other policies.
 
-Restrict debug ports, split-mode service ports and other companions with your own NetworkPolicies.
+`networkPolicy.enabled` adds ingress NetworkPolicies for the OpenCloud pods:
+
+| Port | Allowed from |
+| --- | --- |
+| 9200 (web) | `networkPolicy.ingressFrom`, e.g. the Ingress controller's namespace; any source when empty |
+| Debug port with `/metrics` (with `metrics.enabled`) | `networkPolicy.metricsFrom`; any source when empty |
+| Internal service ports (`topology: split`) | this release's OpenCloud pods only |
+
+Health probes come from the node and stay allowed. Enable the policies with `topology: split`: there, about 40 internal service ports otherwise accept connections from any pod in the cluster. Outbound traffic is not restricted. Companions that reach OpenCloud through `hostAliases` pointing at the Service instead of the Ingress, such as yjs or an office server, must be listed in `ingressFrom`. For the external NATS, see [docs/scaling.md](docs/scaling.md#nats).
+
+Restrict the companions (yjs, Tika) with your own NetworkPolicies.
 
 ## Operations
 
@@ -335,7 +345,7 @@ See [Upgrading](docs/upgrading.md) before changing values or storage topology.
 - **Backups:** back up config and data volumes together, plus the S3 bucket when using `decomposeds3` and the Radicale volume when enabled. Stop services or use a consistent snapshot, and test restoration.
 - **Secrets:** restart the affected pods after changing an externally managed Secret used as environment variables. Keep internal service secrets and IDs stable.
 - **Persistence:** check PVC retention before uninstalling. With `persistence.data.shared`, the data claim `<fullname>-data` is kept on uninstall (`helm.sh/resource-policy: keep`) and must be deleted by hand. Resource and claim names depend on the release name and `fullnameOverride`.
-- **Resources:** OpenCloud requests 250m CPU and 512Mi memory by default. Tune resources from measured load; the startup probe allows five minutes.
+- **Resources:** OpenCloud requests 250m CPU and 512Mi memory by default and sets no limits, since a CPU limit throttles uploads and thumbnail generation. Tune requests from measured load; the startup probe allows five minutes. **After some time in production**, set a memory limit from the observed peak usage (`resources.limits.memory`, and `frontend.resources` in `topology: split`), so a runaway process cannot exhaust the node.
 - **GitOps:** the chart has no hooks. Install any required Gateway API or ServiceMonitor CRDs before applying its rendered resources.
 
 ### Before production
@@ -520,6 +530,13 @@ Push a `vX.Y.Z` tag matching `version` in `Chart.yaml` to run CI, package the ch
 | nats.existingSecret | string | `""` | Existing Secret with the NATS username and password; empty connects without credentials. |
 | nats.passwordSecretKey | string | `"password"` |  |
 | nats.usernameSecretKey | string | `"username"` |  |
+| networkPolicy.enabled | bool | `false` | Renders the policies. Recommended with topology split, where about 40 internal service ports otherwise accept connections from any pod. |
+| networkPolicy.ingressFrom | list | `[]` | Peers allowed to reach the web port 9200, as NetworkPolicy `from` entries, e.g. the Ingress controller's namespace. Empty allows any source. Companions that call the public URL through hostAliases pointing at the Service (yjs, office servers) must be included. |
+| networkPolicy.metricsFrom | list | `[]` | Peers allowed to scrape /metrics. Empty allows any source. |
+| networkPolicy.nats.clientPort | int | `4222` |  |
+| networkPolicy.nats.clusterPort | int | `6222` |  |
+| networkPolicy.nats.monitorPort | int | `8222` |  |
+| networkPolicy.nats.podSelector | object | `{}` | Labels of the external NATS pods, which must run in the release namespace (nats.address without another namespace). When set (topology split), a policy limits their client port to this release's OpenCloud pods. Only for a NATS that serves this release alone. |
 | nodeSelector | object | `{}` |  |
 | passwordPolicy.bannedPasswords | list | `[]` | Passwords rejected by the policy, one per entry. Rendered into banned-password-list.txt; empty disables the list. |
 | passwordPolicy.disabled | bool | `false` |  |

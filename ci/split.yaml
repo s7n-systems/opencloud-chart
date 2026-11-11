@@ -8,8 +8,9 @@ frontend:
     enabled: true
     minReplicas: 3
     maxReplicas: 12
+# NATS in the release namespace, so networkPolicy.nats can protect it.
 nats:
-  address: "nats.nats.svc.cluster.local:4222"
+  address: "opencloud-nats:4222"
   existingSecret: "opencloud-nats"
 serviceSecrets:
   existingSecret: "opencloud-service-secrets"
@@ -62,4 +63,13 @@ web:
         repository: "opencloudeu/web-extensions"
         tag: "unzip-2.2.1"
         digest: "sha256:9a71251417a4e76dafa15fcddff9540cbdcdbf0813ac347049e900654a3df448"
+networkPolicy:
+  enabled: true
+  ingressFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: "ingress-nginx"
+  nats:
+    podSelector:
+      app.kubernetes.io/name: "nats"
 ...

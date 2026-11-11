@@ -277,6 +277,11 @@ class ChartChecks(unittest.TestCase):
         self.assertEqual(set(files(docs)), {'csp.yaml'})
         csp = yaml.safe_load(files(docs)['csp.yaml'])['directives']
         self.assertEqual(csp['default-src'], ["'none'"])
+        self.assertIn('https://update.opencloud.eu/', csp['connect-src'])
+        csp = yaml.safe_load(files(render({'checkForUpdates': False}))['csp.yaml'])['directives']
+        self.assertNotIn('https://update.opencloud.eu/', csp['connect-src'])
+        # Motion photos play from blob: URLs since OpenCloud 9.1.
+        self.assertEqual(csp['media-src'], ["'self'", 'blob:'])
         self.assertEqual(env(docs)['PROXY_CSP_CONFIG_FILE_LOCATION']['value'], '/etc/opencloud/csp.yaml')
         docs = render({'csp': {'extraDirectives': {'frame-src': ['https://embed.diagrams.net/', 'https://maps.example.org/'], 'report-uri': ['https://r']}},
                        'passwordPolicy': {'bannedPasswords': ['password', 'secret']}, 'web': {'appsConfig': {'maps': {'config': {'folderViewEnabled': False}}}}})
@@ -695,6 +700,51 @@ class ChartChecks(unittest.TestCase):
         storage = workload(docs)['spec']['template']['spec']
         self.assertEqual(storage['nodeSelector'], {'disk': 'ssd'})
         self.assertNotIn('tolerations', storage)
+
+    def test_network_policies(self):
+        policies = lambda docs: {d['metadata']['name']: d['spec'] for d in docs if d['kind'] == 'NetworkPolicy' and d['metadata']['name'] != 'opencloud-radicale'}
+        self.assertEqual(policies(self.split()), {})
+        ingress = [{'namespaceSelector': {'matchLabels': {'kubernetes.io/metadata.name': 'ingress'}}}]
+        docs = self.split({'metrics': {'enabled': True},
+                           'nats': {'address': 'nats:4222', 'existingSecret': 'nats'},
+                           'networkPolicy': {'enabled': True, 'ingressFrom': ingress, 'nats': {'podSelector': {'app': 'nats'}}}})
+        found = policies(docs)
+        self.assertEqual(set(found), {'opencloud-server', 'opencloud-frontend', 'opencloud-nats-clients'})
+        rules = lambda spec: {tuple(p['port'] for p in r['ports']): r.get('from') for r in spec['ingress']}
+        peer = [{'podSelector': {'matchLabels': {'app.kubernetes.io/name': 'opencloud', 'app.kubernetes.io/instance': 'opencloud'},
+                                 'matchExpressions': [{'key': 'app.kubernetes.io/component', 'operator': 'In', 'values': ['server', 'frontend']}]}}]
+        frontend, storage = rules(found['opencloud-frontend']), rules(found['opencloud-server'])
+        # Web traffic only to the frontend, from the configured peers; metrics from anywhere.
+        self.assertEqual(frontend[(9200,)], ingress)
+        self.assertIsNone(frontend[(9205,)])
+        self.assertIsNone(storage[(9159,)])
+        self.assertNotIn((9200,), storage)
+        # Internal ports, among them the storage data ports and the gateway, only from this release's OpenCloud pods.
+        internal = [next((k, v) for k, v in r.items() if len(k) > 1) for r in (frontend, storage)]
+        self.assertEqual(internal[0], internal[1])
+        ports, sources = internal[0]
+        self.assertEqual(sources, peer)
+        self.assertTrue({9142, 9157, 9158, 9216, 9280, 9186} <= set(ports))
+        self.assertEqual(found['opencloud-frontend']['podSelector']['matchLabels']['app.kubernetes.io/component'], 'frontend')
+        # NATS clients only from OpenCloud; routes only between the NATS servers.
+        nats = rules(found['opencloud-nats-clients'])
+        self.assertEqual(nats[(4222,)], peer)
+        self.assertEqual(nats[(6222,)], [{'podSelector': {'matchLabels': {'app': 'nats'}}}])
+        self.assertEqual(found['opencloud-nats-clients']['podSelector'], {'matchLabels': {'app': 'nats'}})
+        # Single mode: one policy for the server pod, web port only.
+        single = policies(render({'networkPolicy': {'enabled': True}}))
+        self.assertEqual(list(single), ['opencloud-server'])
+        self.assertEqual(rules(single['opencloud-server']), {(9200,): None})
+        self.assertIn('topology split', render({'networkPolicy': {'nats': {'podSelector': {'app': 'nats'}}}}, succeeds=False))
+        # The policy only reaches NATS pods in the release namespace.
+        selector = {'networkPolicy': {'enabled': True, 'nats': {'podSelector': {'app': 'nats'}}}}
+        for address in ('nats:4222', 'nats.cloud:4222', 'nats.cloud.svc.cluster.local:4222', 'nats.cloud.svc:4222',
+                        'opencloud-nats-0.opencloud-nats.cloud.svc.cluster.local:4222', '10.0.0.5:4222', 'nats.example.org:4222'):
+            self.split({**selector, 'nats': {'address': address}})
+        for address in ('nats.nats.svc.cluster.local:4222', 'nats.nats:4222', 'nats-0.nats.nats.svc:4222'):
+            error = render({'domain': 'example.org', **self.EXTERNAL, **self.SPLIT, **selector, 'nats': {'address': address}},
+                           succeeds=False, raw_defaults=True)
+            self.assertIn('points to namespace nats', error)
 
     def test_split_rejected_combinations(self):
         for values, message in [

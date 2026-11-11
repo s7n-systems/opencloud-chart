@@ -3,10 +3,10 @@ apiVersion: "v2"
 name: "opencloud"
 description: "Helm chart for OpenCloud, the file sync and share platform"
 type: "application"
-version: "0.4.0"
+version: "0.5.0"
 # Kept in step with image.tag in values.yaml.
 # renovate: image=docker.io/opencloudeu/opencloud-rolling
-appVersion: "9.0.0"
+appVersion: "9.1.0"
 home: "https://opencloud.eu"
 icon: "https://raw.githubusercontent.com/opencloud-eu/opencloud-compose/main/config/keycloak/themes/opencloud/login/resources/img/logo.svg"
 keywords:

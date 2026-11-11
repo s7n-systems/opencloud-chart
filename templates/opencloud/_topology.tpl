@@ -238,6 +238,23 @@ WEB_HTTP: 9100
 {{- else if gt (int .Values.storagePods.replicas) 1 -}}
 {{- fail "storagePods.replicas above 1 requires persistence.data.shared: the storage pods share one ReadWriteMany data volume" -}}
 {{- end -}}
+{{- if .Values.networkPolicy.nats.podSelector -}}
+{{- /* The namespace is known only for Kubernetes service names: <service>.<namespace>,
+       or a name with a "svc" label, whose namespace is the label before it
+       (<service>.<namespace>.svc... and <pod>.<service>.<namespace>.svc...).
+       Other hosts, such as IP addresses or external names, are not checked. */ -}}
+{{- $parts := splitList "." (index (splitList ":" .Values.nats.address) 0) -}}
+{{- $namespace := "" -}}
+{{- range $i, $label := $parts -}}
+{{- if and (eq $label "svc") (ge $i 2) (not $namespace) -}}{{- $namespace = index $parts (sub $i 1) -}}{{- end -}}
+{{- end -}}
+{{- if and (not $namespace) (eq (len $parts) 2) (not (regexMatch "^[0-9]+$" (index $parts 1))) -}}
+{{- $namespace = index $parts 1 -}}
+{{- end -}}
+{{- if and $namespace (ne $namespace .Release.Namespace) -}}
+{{- fail (printf "networkPolicy.nats.podSelector protects NATS pods in the release namespace %s, but nats.address points to namespace %s; NetworkPolicies only apply in their own namespace. Manage that NATS's policy in its namespace, or use a NATS in this one." .Release.Namespace $namespace) -}}
+{{- end -}}
+{{- end -}}
 {{- $autoscaling := .Values.frontend.autoscaling -}}
 {{- if and $autoscaling.enabled (gt (int $autoscaling.minReplicas) (int $autoscaling.maxReplicas)) -}}
 {{- fail "frontend.autoscaling.minReplicas must not exceed maxReplicas" -}}
@@ -245,6 +262,8 @@ WEB_HTTP: 9100
 {{- if and $autoscaling.enabled (not (dig "requests" "cpu" "" .Values.frontend.resources)) -}}
 {{- fail "frontend.autoscaling scales on CPU use relative to the request: set frontend.resources.requests.cpu" -}}
 {{- end -}}
+{{- else if .Values.networkPolicy.nats.podSelector -}}
+{{- fail "networkPolicy.nats.podSelector is used only with topology split; topology single runs NATS inside the pod" -}}
 {{- else if .Values.nats.address -}}
 {{- fail "nats.address is used only with topology split; topology single runs NATS inside the pod" -}}
 {{- else if gt (int .Values.storagePods.replicas) 1 -}}
