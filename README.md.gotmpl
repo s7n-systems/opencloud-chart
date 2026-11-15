@@ -59,12 +59,12 @@ The chart deploys OpenCloud as a single-process StatefulSet with persistent conf
 | **Exposure** | Ingress or Gateway API HTTPRoute; configurable proxy routes and Content Security Policy |
 | **Security** | Non-root containers, read-only root filesystems, dropped capabilities, no ServiceAccount token and images pinned by digest |
 | **Observability** | Health probes, Prometheus metrics, optional bearer token and ServiceMonitor |
-| **GitOps** | No Helm hooks; existing Secrets for credentials and optional externally managed service secrets |
+| **GitOps** | No Helm hooks apart from the optional `helm test` pod; existing Secrets for credentials and optional externally managed service secrets |
 | **Release tooling** | OCI publishing to GHCR, cosign signing and Renovate configuration |
 
 ## Requirements
 
-- A Kubernetes cluster and Helm; CI uses Helm 4.
+- Kubernetes 1.27 or later (`kubeVersion` in `Chart.yaml`) and Helm; CI uses Helm 4. Native sidecars (`extraInitContainers` with `restartPolicy: Always`) need Kubernetes 1.29 or later.
 - Persistent storage for configuration and data, or existing claims.
 - A public hostname with DNS, HTTPS termination and a certificate trusted by browsers and OpenCloud. The hostname must also resolve and be reachable from inside the cluster.
 - External services for the integrations you enable: OIDC/LDAP, S3, SMTP, an office server or an antivirus scanner.
@@ -224,12 +224,14 @@ Whatever the driver, `/var/lib/opencloud` holds local service state, including N
 | | `single` (default) | `split` |
 | --- | --- | --- |
 | Pods | One StatefulSet pod runs every service, with NATS inside | The StatefulSet runs the storage services; the `<fullname>-frontend` Deployment runs everything else |
-| Scaling | None | Frontend: `frontend.replicas`, or `frontend.autoscaling` with a HorizontalPodAutoscaler on CPU. Storage: one pod, or several on a shared `ReadWriteMany` volume ([experimental](docs/scaling.md#several-storage-pods-experimental)) |
+| Scaling | None | Frontend: `frontend.replicas`, or `frontend.autoscaling` with a HorizontalPodAutoscaler on CPU, memory or custom metrics. Storage: one pod, or several on a shared `ReadWriteMany` volume ([experimental](docs/scaling.md#several-storage-pods-experimental)) |
 | Requires | Nothing extra | `identity.mode: oidc` with an external `identity.ldap.uri`, `serviceSecrets.existingSecret`, and an external NATS cluster in `nats.address` |
 
 In `split`, the StatefulSet runs `storage-users`, `storage-system`, `search` and `ocm`. It defaults to one replica on a `ReadWriteOnce` volume. Every file request passes through storage, including S3 transfers; size its top-level `resources` accordingly.
 
-Frontend pods run the remaining services, including the proxy, web UI and thumbnails. They use temporary config and cache volumes, with separate `frontend.resources` and scheduling settings. With multiple frontend replicas, the PodDisruptionBudget uses `frontend.podDisruptionBudget.minAvailable`.
+Frontend pods run the remaining services, including the proxy, web UI and thumbnails. They use temporary config and cache volumes, with separate `frontend.resources` and scheduling settings. With multiple frontend replicas, the PodDisruptionBudget uses `frontend.podDisruptionBudget.minAvailable`. `frontend.podAntiAffinityPreset: soft` (or `hard`) spreads them across nodes when `frontend.affinity` is empty; `frontend.topologySpreadConstraints` spreads them across zones.
+
+`frontend.autoscaling` scales on CPU (`targetCPUUtilizationPercentage`, default 80) and optionally memory (`targetMemoryUtilizationPercentage`), each in percent of the containers' requests. `metrics` replaces both with raw autoscaling/v2 entries, for example custom or external metrics, and `behavior` sets the scaling behavior; by default, pods are removed one per minute after ten minutes of lower load. The HPA computes utilization over every container in the pod: if one lacks the request, it cannot compute it and does not scale. The chart therefore requires the request on the frontend container, on every `frontend.sidecars` entry and on every native sidecar (an `extraInitContainers` entry with `restartPolicy: Always`, which needs Kubernetes 1.29 or later).
 
 **The storage pod is a single point of failure for file access.** While it restarts, the frontends keep serving the web UI, but file operations fail. After a node failure, Kubernetes must detach the `ReadWriteOnce` volume before the replacement pod starts, which can take several minutes.
 
@@ -278,11 +280,13 @@ These settings govern passwords, not whether public links may be created. The ch
 | `web.theme` | A custom theme for the web UI: name, logos, colours and links. See [Theme](#theme). |
 | `csp.extraDirectives` | Additional Content Security Policy sources, for example for web extensions that embed other sites. |
 
+Radicale is disabled by default (`radicale.enabled: false`): the chart deploys no Radicale resources or DAV proxy routes, and OpenCloud does not advertise its calendar/contact endpoints. Keep it disabled when another service provides calendars and contacts. The chart does not migrate existing Radicale calendars and contacts elsewhere.
+
 ### Web extensions
 
 `web.extensions` installs web apps from images. Each image holds its app in `/web/apps/<name>`. The upstream images from [opencloud-eu/web-extensions](https://github.com/opencloud-eu/web-extensions) use this layout: `opencloudeu/web-extensions:<name>-<version>`.
 
-No apps are installed by default. A good start are `unzip` and `json-viewer`. Both run in the browser and need no external services:
+No apps are installed by default. A good start are `unzip` and `json-viewer`. Both run in the browser and need no external services. Add to your values:
 
 ```yaml
 web:
@@ -315,7 +319,7 @@ With `web.extensions` set, `WEB_ASSET_APPS_PATH` points to the chart's directory
 
 ### Theme
 
-`web.theme` adds a custom theme for the web UI: product name, logos, favicon, colours and links to imprint and privacy pages. OpenCloud serves it next to its built-in theme, which stays available.
+`web.theme` adds a custom theme for the web UI: product name, logos, favicon, colours and links to imprint and privacy pages. OpenCloud serves it next to its built-in theme, which stays available. Add to your values:
 
 ```yaml
 web:
@@ -364,10 +368,13 @@ Radicale trusts the proxy's `X-Remote-User` header. When enabled, a NetworkPolic
 | 9200 (web) | `networkPolicy.ingressFrom`, e.g. the Ingress controller's namespace; any source when empty |
 | Debug port with `/metrics` (with `metrics.enabled`) | `networkPolicy.metricsFrom`; any source when empty |
 | Internal service ports (`topology: split`) | this release's OpenCloud pods only |
+| yjs, port 1234 | the OpenCloud proxy pods |
+| Tika, port 9998 | this release's OpenCloud pods, which run the search service |
 
-Health probes come from the node and stay allowed. Enable the policies with `topology: split`: there, about 40 internal service ports otherwise accept connections from any pod in the cluster. Outbound traffic is not restricted. Companions that reach OpenCloud through `hostAliases` pointing at the Service instead of the Ingress, such as yjs or an office server, must be listed in `ingressFrom`. For the external NATS, see [docs/scaling.md](docs/scaling.md#nats).
+Health probes come from the node and stay allowed. Enable the policies with `topology: split`: there, about 40 internal service ports otherwise accept connections from any pod in the cluster. Outbound traffic is not restricted. yjs calls OpenCloud's Service directly and is admitted to port 9200 automatically. Other companions that reach OpenCloud through `hostAliases` pointing at the Service instead of the Ingress, such as an office server, must be listed in `ingressFrom`. For the external NATS, see [docs/scaling.md](docs/scaling.md#nats).
 
-Restrict the companions (yjs, Tika) with your own NetworkPolicies.
+With `tests.enabled`, all these policies, and Radicale's, also admit the `helm test` pod (labels `app.kubernetes.io/instance: <release>` and `app.kubernetes.io/component: test`) to the ports it checks.
+
 
 ## Operations
 
@@ -375,9 +382,12 @@ See [Upgrading](docs/upgrading.md) before changing values or storage topology.
 
 - **Backups:** back up config and data volumes together, plus the S3 bucket when using `decomposeds3` and the Radicale volume when enabled. Stop services or use a consistent snapshot, and test restoration.
 - **Secrets:** restart the affected pods after changing an externally managed Secret used as environment variables. Keep internal service secrets and IDs stable.
-- **Persistence:** check PVC retention before uninstalling. With `persistence.data.shared`, the data claim `<fullname>-data` is kept on uninstall (`helm.sh/resource-policy: keep`) and must be deleted by hand. Resource and claim names depend on the release name and `fullnameOverride`.
+- **Persistence:** check PVC retention before uninstalling. `persistence.retentionPolicy` and `radicale.persistence.retentionPolicy` set whether claims created by the StatefulSets are kept or deleted when the StatefulSet is deleted or scaled down; claims given as `existingClaim` are never touched, and the shared data claim follows the rule below. With `persistence.data.shared`, the data claim `<fullname>-data` is kept on uninstall (`helm.sh/resource-policy: keep`) and must be deleted by hand. Resource and claim names depend on the release name and `fullnameOverride`.
 - **Resources:** OpenCloud requests 250m CPU and 512Mi memory by default and sets no limits, since a CPU limit throttles uploads and thumbnail generation. Tune requests from measured load; the startup probe allows five minutes. **After some time in production**, set a memory limit from the observed peak usage (`resources.limits.memory`, and `frontend.resources` in `topology: split`), so a runaway process cannot exhaust the node.
-- **GitOps:** the chart has no hooks. Install any required Gateway API or ServiceMonitor CRDs before applying its rendered resources.
+- **Checks:** `helm test <release>` starts a pod that checks the web port (`/status.php`), in `topology: split` the readiness of each storage pod, and yjs, Tika and Radicale when the chart deploys them. It uses the OpenCloud image and is removed after a successful run; a failed one stays for its logs until the next run. Installs and syncs never run it: only `helm test` and `helmfile test` do, and Argo CD skips test hooks. `tests.enabled: false` removes it. Storage pods are checked one by one; the other components through their Service, so such a check passes when one ready pod answers, and the readiness probes cover each pod.
+- **Sidecars and extra containers:** `sidecars`, `frontend.sidecars`, the companions' `sidecars` and every `extraInitContainers` entry are added as written. They must meet the same pod security settings as the chart's containers (non-root, read-only root filesystem, no privilege escalation, all capabilities dropped, resource requests) to pass the [Kyverno policies](policies/kyverno) and restricted Pod Security admission. With frontend autoscaling, they also need the requests the HPA scales on, as described in [Scaling](#scaling).
+- **Companions:** yjs, Radicale and Tika take `extraEnv` and `extraEnvVars` (full entries, e.g. `valueFrom.secretKeyRef`), `extraVolumes`, `extraVolumeMounts` and `extraInitContainers` (for example for custom CA certificates), configurable `livenessProbe`, `readinessProbe` (and Tika's `startupProbe`), and `serviceAccountName` for a ServiceAccount of their own.
+- **GitOps:** apart from the `helm test` pod, the chart has no hooks. Install any required Gateway API or ServiceMonitor CRDs before applying its rendered resources.
 
 ### Before production
 
@@ -408,6 +418,8 @@ This README is generated from `README.md.gotmpl` and the `# --` comments in `val
 ### Release
 
 Bitnami Common is vendored in `charts/`. Keep `Chart.yaml`, `Chart.lock` and the dependency archive in sync; `helm dependency build .` restores the locked dependency.
+
+Before a release, update `artifacthub.io/changes` in `Chart.yaml` with the release's changes (kinds: added, changed, deprecated, removed, fixed, security) and set `artifacthub.io/containsSecurityUpdates` accordingly. Renovate keeps `artifacthub.io/images` in step with the image pins in `values.yaml`, and a render test checks that they match.
 
 Push a `vX.Y.Z` tag matching `version` in `Chart.yaml` to run CI, package the chart, publish it to `oci://ghcr.io/s7n-systems/charts/opencloud`, sign its digest with cosign and create a GitHub release with the packaged chart and generated notes. Forks publish under their repository owner's GHCR namespace.
 

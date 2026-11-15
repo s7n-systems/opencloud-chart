@@ -750,12 +750,41 @@
               "minimum": 1
             },
             "targetCPUUtilizationPercentage": {
-              "type": "integer",
-              "minimum": 1
+              "oneOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                {
+                  "const": ""
+                }
+              ]
             },
-            "scaleDownStabilizationWindowSeconds": {
-              "type": "integer",
-              "minimum": 0
+            "targetMemoryUtilizationPercentage": {
+              "oneOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                {
+                  "const": ""
+                }
+              ]
+            },
+            "metrics": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "type"
+                ]
+              }
+            },
+            "behavior": {
+              "type": [
+                "object",
+                "null"
+              ]
             }
           }
         },
@@ -800,6 +829,25 @@
         },
         "topologySpreadConstraints": {
           "type": "array"
+        },
+        "priorityClassName": {
+          "type": "string"
+        },
+        "sidecars": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name"
+            ]
+          }
+        },
+        "podAntiAffinityPreset": {
+          "enum": [
+            "",
+            "soft",
+            "hard"
+          ]
         }
       }
     },
@@ -932,6 +980,24 @@
               "type": "boolean"
             }
           }
+        },
+        "retentionPolicy": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "whenDeleted": {
+              "enum": [
+                "Retain",
+                "Delete"
+              ]
+            },
+            "whenScaled": {
+              "enum": [
+                "Retain",
+                "Delete"
+              ]
+            }
+          }
         }
       }
     },
@@ -972,6 +1038,9 @@
               "IPv6"
             ]
           }
+        },
+        "loadBalancerClass": {
+          "type": "string"
         }
       }
     },
@@ -1104,6 +1173,116 @@
         },
         "extraEnv": {
           "type": "object"
+        },
+        "priorityClassName": {
+          "type": "string"
+        },
+        "sidecars": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name"
+            ]
+          }
+        },
+        "serviceAccountName": {
+          "type": "string"
+        },
+        "livenessProbe": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "initialDelaySeconds": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "periodSeconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "timeoutSeconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "failureThreshold": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "successThreshold": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "readinessProbe": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "initialDelaySeconds": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "periodSeconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "timeoutSeconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "failureThreshold": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "successThreshold": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "extraEnvVars": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name"
+            ]
+          }
+        },
+        "extraInitContainers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name"
+            ]
+          }
+        },
+        "extraVolumes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name"
+            ]
+          }
+        },
+        "extraVolumeMounts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "mountPath"
+            ]
+          }
         }
       }
     },
@@ -1171,6 +1350,24 @@
             "size": {
               "type": "string",
               "pattern": "^[0-9]+(\\.[0-9]+)?([KMGTPE]i?)?$"
+            },
+            "retentionPolicy": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "whenDeleted": {
+                  "enum": [
+                    "Retain",
+                    "Delete"
+                  ]
+                },
+                "whenScaled": {
+                  "enum": [
+                    "Retain",
+                    "Delete"
+                  ]
+                }
+              }
             }
           }
         },
@@ -1197,6 +1394,119 @@
         },
         "tolerations": {
           "type": "array"
+        },
+        "priorityClassName": {
+          "type": "string"
+        },
+        "sidecars": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name"
+            ]
+          }
+        },
+        "serviceAccountName": {
+          "type": "string"
+        },
+        "livenessProbe": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "initialDelaySeconds": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "periodSeconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "timeoutSeconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "failureThreshold": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "successThreshold": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "readinessProbe": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "initialDelaySeconds": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "periodSeconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "timeoutSeconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "failureThreshold": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "successThreshold": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "extraEnv": {
+          "type": "object"
+        },
+        "extraEnvVars": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name"
+            ]
+          }
+        },
+        "extraInitContainers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name"
+            ]
+          }
+        },
+        "extraVolumes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name"
+            ]
+          }
+        },
+        "extraVolumeMounts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "mountPath"
+            ]
+          }
         }
       }
     },
@@ -1264,6 +1574,160 @@
         },
         "tolerations": {
           "type": "array"
+        },
+        "priorityClassName": {
+          "type": "string"
+        },
+        "sidecars": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name"
+            ]
+          }
+        },
+        "serviceAccountName": {
+          "type": "string"
+        },
+        "startupProbe": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "initialDelaySeconds": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "periodSeconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "timeoutSeconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "failureThreshold": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "successThreshold": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "livenessProbe": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "initialDelaySeconds": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "periodSeconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "timeoutSeconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "failureThreshold": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "successThreshold": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "readinessProbe": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "initialDelaySeconds": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "periodSeconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "timeoutSeconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "failureThreshold": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "successThreshold": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "extraEnv": {
+          "type": "object"
+        },
+        "extraEnvVars": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name"
+            ]
+          }
+        },
+        "extraInitContainers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name"
+            ]
+          }
+        },
+        "extraVolumes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name"
+            ]
+          }
+        },
+        "extraVolumeMounts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "mountPath"
+            ]
+          }
+        }
+      }
+    },
+    "tests": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "resources": {
+          "type": "object"
         }
       }
     },
@@ -1417,6 +1881,18 @@
     },
     "topologySpreadConstraints": {
       "type": "array"
+    },
+    "priorityClassName": {
+      "type": "string"
+    },
+    "sidecars": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name"
+        ]
+      }
     },
     "extraEnv": {
       "type": "object",

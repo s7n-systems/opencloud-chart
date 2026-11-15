@@ -1,0 +1,107 @@
+{{- $fullname := include "opencloud.fullname" . -}}
+{{- $ns := .Release.Namespace -}}
+{{- $url := include "opencloud.url" . -}}
+{{- $host := (urlParse $url).host -}}
+{{- if or .Values.host .Values.domain -}}
+{{- $host = include "opencloud.host" . -}}
+{{- end -}}
+OpenCloud {{ .Chart.AppVersion }} is deployed as {{ $fullname }} in namespace {{ $ns }}
+{{- if eq (include "opencloud.split" .) "true" }}
+in topology split: {{ include "opencloud.storageReplicas" . }} storage pod(s) and the {{ $fullname }}-frontend Deployment
+{{- if .Values.frontend.autoscaling.enabled }} ({{ .Values.frontend.autoscaling.minReplicas }} to {{ .Values.frontend.autoscaling.maxReplicas }} pods, autoscaled)
+{{- else }} ({{ .Values.frontend.replicas }} pods)
+{{- end }}.
+{{- else }}.
+{{- end }}
+
+OpenCloud's public URL: {{ $url }}
+{{- if .Values.ingress.enabled }}
+
+The Ingress {{ $fullname }} routes {{ $host }} to it
+{{- if eq (include "opencloud.ingressScheme" (dict "host" $host "tls" .Values.ingress.tls)) "https" }} and terminates TLS.
+{{- else if hasPrefix "https://" $url }}, but has no TLS entry for the host:
+terminate TLS in front of the controller, or add the host to ingress.tls.
+{{- else }} over plain HTTP, for tests only.
+{{- end }}
+{{- else if .Values.gatewayAPI.httpRoute.enabled }}
+
+The HTTPRoute {{ $fullname }} routes these hostnames to it:
+{{- range (.Values.gatewayAPI.httpRoute.hostnames | default (list $host)) }}
+  {{ . }}
+{{- end }}
+over the Gateway's listeners: https where a listener terminates TLS for the host.
+{{- else }}
+
+No Ingress or HTTPRoute is enabled. OpenCloud only works at its public URL, so
+route {{ $host }} to Service {{ $fullname }} port {{ .Values.service.port }} yourself.
+To check that it answers meanwhile:
+
+  kubectl --namespace {{ $ns }} port-forward svc/{{ $fullname }} 9200:{{ .Values.service.port }}
+  curl http://localhost:9200/status.php
+{{- end }}
+{{- if eq .Values.identity.mode "builtin" }}
+
+Sign in as "admin" with the initial password from Secret
+{{- if .Values.admin.existingSecret }} {{ .Values.admin.existingSecret }}:
+
+  kubectl --namespace {{ $ns }} get secret {{ .Values.admin.existingSecret }} \
+    -o jsonpath='{.data.{{ .Values.admin.passwordSecretKey | replace "." "\\." }}}' | base64 --decode
+{{- else }} {{ $fullname }}-env:
+
+  kubectl --namespace {{ $ns }} get secret {{ $fullname }}-env \
+    -o jsonpath='{.data.adminPassword}' | base64 --decode
+{{- end }}
+
+OpenCloud reads it on the first start only; change it later in the web UI.
+{{- else }}
+
+Users sign in through {{ .Values.identity.oidc.issuer }}
+{{- if eq .Values.identity.oidc.roleAssignment.driver "oidc" }}; their roles come from the
+"{{ .Values.identity.oidc.roleAssignment.claim }}" claim (see Keycloak claims in the README).
+{{- else }}.
+{{- end }}
+{{- end }}
+{{- if .Values.tests.enabled }}
+
+Check that everything answers:
+
+  helm test {{ .Release.Name }} --namespace {{ $ns }}
+{{- end }}
+{{- $warnings := list }}
+{{- if not .Values.persistence.enabled }}
+{{- $warnings = append $warnings "persistence.enabled is false: all state, including user files on the data volume, is lost whenever the pod is replaced." }}
+{{- end }}
+{{- if .Values.insecure }}
+{{- $warnings = append $warnings "insecure is true: OpenCloud skips TLS verification for the IdP, office server and its own URL. Only for test installs." }}
+{{- end }}
+{{- if and (eq (include "opencloud.externalLdap" .) "true") .Values.identity.ldap.insecure }}
+{{- $warnings = append $warnings "identity.ldap.insecure is true: the LDAP server's certificate is not verified." }}
+{{- end }}
+{{- if .Values.demoUsers }}
+{{- $warnings = append $warnings "demoUsers is true: public demo accounts with the password \"demo\" exist. Never on production." }}
+{{- end }}
+{{- if .Values.basicAuth }}
+{{- $warnings = append $warnings "basicAuth is true: clients can send passwords directly, bypassing the IdP's protections." }}
+{{- end }}
+{{- if and (eq (include "opencloud.split" .) "true") (not .Values.networkPolicy.enabled) }}
+{{- $warnings = append $warnings "topology split without networkPolicy.enabled: the internal service ports accept connections from any pod in the cluster." }}
+{{- end }}
+{{- if gt (int (include "opencloud.storageReplicas" .)) 1 }}
+{{- $warnings = append $warnings "storagePods.replicas above 1 is experimental; see docs/scaling.md." }}
+{{- end }}
+{{- $plain := list }}
+{{- if and (eq .Values.identity.mode "builtin") (not .Values.admin.existingSecret) .Values.admin.password }}{{- $plain = append $plain "admin.password" }}{{- end }}
+{{- if and (eq (include "opencloud.externalLdap" .) "true") (not .Values.identity.ldap.existingSecret) .Values.identity.ldap.bindPassword }}{{- $plain = append $plain "identity.ldap.bindPassword" }}{{- end }}
+{{- if and (eq .Values.storage.driver "decomposeds3") (not .Values.storage.s3.existingSecret) }}{{- $plain = append $plain "storage.s3 keys" }}{{- end }}
+{{- if and .Values.smtp.enabled .Values.smtp.username (not .Values.smtp.existingSecret) .Values.smtp.password }}{{- $plain = append $plain "smtp.password" }}{{- end }}
+{{- if and (not .Values.metrics.token.existingSecret) .Values.metrics.token.value }}{{- $plain = append $plain "metrics.token.value" }}{{- end }}
+{{- if $plain }}
+{{- $warnings = append $warnings (printf "credentials set as plain values are visible in Helm's release history (%s): prefer the existingSecret settings." (join ", " $plain)) }}
+{{- end }}
+{{- if $warnings }}
+
+WARNING:
+{{- range $warnings }}
+  - {{ . }}
+{{- end }}
+{{- end }}

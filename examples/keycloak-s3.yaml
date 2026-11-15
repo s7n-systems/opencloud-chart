@@ -1,7 +1,8 @@
 ---
 # Production-style install: Keycloak sign-in with autoprovisioning, file
-# content in S3, email notifications, Collabora, full-text search and
-# CalDAV/CardDAV. Create the referenced Secrets in the release namespace first.
+# content in S3, email notifications, Collabora and full-text search; enable
+# radicale for CalDAV/CardDAV. Create the referenced Secrets in the release
+# namespace first.
 domain: "example.org"
 
 identity:
@@ -36,7 +37,7 @@ tika:
   enabled: true
 
 radicale:
-  enabled: true
+  enabled: false
 
 ingress:
   enabled: true

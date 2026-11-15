@@ -16,6 +16,9 @@ metadata:
 spec:
   # Radicale stores collections on a local filesystem: one replica.
   replicas: 1
+  {{- with $values.persistence.retentionPolicy }}
+  persistentVolumeClaimRetentionPolicy: {{- toYaml . | nindent 4 }}
+  {{- end }}
   serviceName: {{ $name }}
   selector:
     matchLabels:
@@ -30,12 +33,15 @@ spec:
         {{- end }}
         checksum/config: {{ include (print $.Template.BasePath "/radicale/configmap.yaml") . | sha256sum }}
     spec:
-      serviceAccountName: {{ include "opencloud.serviceAccountName" . }}
+      serviceAccountName: {{ $values.serviceAccountName | default (include "opencloud.serviceAccountName" .) }}
       automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
       {{- include "common.images.renderPullSecrets" (dict "images" (list $values.image) "context" $) | nindent 6 }}
       {{- if $values.podSecurityContext.enabled }}
       securityContext:
         {{- omit $values.podSecurityContext "enabled" | toYaml | nindent 8 }}
+      {{- end }}
+      {{- with $values.priorityClassName }}
+      priorityClassName: {{ . | quote }}
       {{- end }}
       {{- with $values.nodeSelector }}
       nodeSelector: {{- toYaml . | nindent 8 }}
@@ -46,6 +52,10 @@ spec:
       {{- with $values.tolerations }}
       tolerations: {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- with $values.extraInitContainers }}
+      initContainers:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: radicale
           image: {{ include "common.images.image" (dict "imageRoot" $values.image "global" .Values.global "chart" .Chart) | quote }}
@@ -55,19 +65,21 @@ spec:
             {{- omit $values.containerSecurityContext "enabled" | toYaml | nindent 12 }}
           {{- end }}
           args: ["--config", "/etc/radicale/config"]
+          {{- with include "opencloud.companionEnv" (dict "env" list "values" $values) | fromYamlArray }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           ports:
             - name: http
               containerPort: 5232
+          {{- with include "opencloud.companionProbe" (dict "probe" $values.livenessProbe "handler" (dict "tcpSocket" (dict "port" "http"))) }}
           livenessProbe:
-            tcpSocket:
-              port: http
-            periodSeconds: 15
-            timeoutSeconds: 5
+            {{- . | nindent 12 }}
+          {{- end }}
+          {{- with include "opencloud.companionProbe" (dict "probe" $values.readinessProbe "handler" (dict "tcpSocket" (dict "port" "http"))) }}
           readinessProbe:
-            tcpSocket:
-              port: http
-            periodSeconds: 10
-            timeoutSeconds: 5
+            {{- . | nindent 12 }}
+          {{- end }}
           volumeMounts:
             - name: config
               mountPath: /etc/radicale/config
@@ -77,14 +89,23 @@ spec:
               mountPath: /var/lib/radicale
             - name: tmp
               mountPath: /tmp
+            {{- with $values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           resources:
             {{- toYaml $values.resources | nindent 12 }}
+        {{- with $values.sidecars }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       volumes:
         - name: config
           configMap:
             name: {{ $name }}
         - name: tmp
           emptyDir: {}
+        {{- with $values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
         {{- if not $values.persistence.enabled }}
         - name: data
           emptyDir: {}

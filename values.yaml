@@ -354,15 +354,31 @@ frontend:
   # -- Number of frontend pods while autoscaling is disabled.
   replicas: 2
   autoscaling:
-    # -- Scales the frontend with a HorizontalPodAutoscaler on CPU use instead
-    # of frontend.replicas. Requires the metrics API, e.g. metrics-server.
+    # -- Scales the frontend with a HorizontalPodAutoscaler instead of
+    # frontend.replicas. Requires the metrics API, e.g. metrics-server.
     enabled: false
     minReplicas: 2
     maxReplicas: 10
-    # -- Average CPU use, in percent of frontend.resources.requests.cpu, above which pods are added.
+    # -- Average CPU use, in percent of the CPU requests, above which pods are
+    # added. Empty disables this target. Every frontend container, sidecars
+    # included, needs resources.requests.cpu: the HPA cannot compute
+    # utilization if one lacks it.
     targetCPUUtilizationPercentage: 80
-    # -- Seconds the CPU use must stay below the target before pods are removed.
-    scaleDownStabilizationWindowSeconds: 600
+    # -- Average memory use, in percent of the memory requests. Empty disables
+    # this target; as for CPU, every container needs a memory request.
+    targetMemoryUtilizationPercentage: ""
+    # -- Advanced: raw autoscaling/v2 metric entries, used instead of the two
+    # targets above when non-empty, e.g. custom or external metrics.
+    metrics: []
+    # -- autoscaling/v2 behavior. By default, pods are removed one per minute
+    # after ten minutes of lower load. Set to null for the Kubernetes defaults.
+    behavior:
+      scaleDown:
+        stabilizationWindowSeconds: 600
+        policies:
+          - type: "Pods"
+            value: 1
+            periodSeconds: 60
   podDisruptionBudget:
     # -- Keeps minAvailable frontend pods running during voluntary disruptions
     # such as node drains. Rendered only with more than one replica.
@@ -375,9 +391,18 @@ frontend:
   podLabels: {}
   podAnnotations: {}
   nodeSelector: {}
+  # -- Explicit affinity always wins over podAntiAffinityPreset below.
   affinity: {}
+  # -- Spreads the frontend pods across nodes when affinity is left empty:
+  # "", "soft" (preferred) or "hard" (required: surplus pods stay pending
+  # rather than share a node).
+  podAntiAffinityPreset: ""
   tolerations: []
   topologySpreadConstraints: []
+  # -- PriorityClass for the frontend pods.
+  priorityClassName: ""
+  # -- Extra containers in the frontend pods, as written.
+  sidecars: []
 
 # The storage pods of topology split: the StatefulSet that runs storage-users,
 # storage-system, search, ocm and auth-guest on the data volume.
@@ -385,8 +410,8 @@ storagePods:
   # -- Number of storage pods. EXPERIMENTAL above 1, which requires
   # persistence.data.shared: the pods share one ReadWriteMany data volume on a
   # file system with flock and extended attributes, e.g. NFS 4.2 mounted with
-  # noac, or CephFS. search, ocm and auth-guest keep state that only one process
-  # may hold and run on the first pod only. See docs/scaling.md.
+  # noac,lookupcache=none, or CephFS. User and system storage run on every pod;
+  # search, ocm and auth-guest run on the first pod only. See docs/scaling.md.
   replicas: 1
 
 # External NATS cluster for topology split, which holds the service registry,
@@ -457,6 +482,12 @@ persistence:
     accessMode: "ReadWriteOnce"
     storageClass: ""
     size: "50Gi"
+  # -- StatefulSet persistentVolumeClaimRetentionPolicy: whenDeleted and whenScaled,
+  # each Retain or Delete. Empty keeps Kubernetes' default, Retain for both.
+  # Applies only to claims the StatefulSet creates from its templates: not to
+  # existingClaim, nor to the standalone claim of persistence.data.shared,
+  # which Helm keeps on uninstall.
+  retentionPolicy: {}
 
 service:
   type: "ClusterIP"
@@ -465,6 +496,9 @@ service:
   # -- SingleStack, PreferDualStack or RequireDualStack. Empty keeps the cluster default.
   ipFamilyPolicy: ""
   ipFamilies: []
+  # -- Load balancer implementation (spec.loadBalancerClass), e.g.
+  # service.k8s.aws/nlb. Rendered only with type LoadBalancer.
+  loadBalancerClass: ""
 
 ingress:
   enabled: false
@@ -528,11 +562,35 @@ yjs:
   nodeSelector: {}
   affinity: {}
   tolerations: []
+  # -- PriorityClass for the yjs pod.
+  priorityClassName: ""
+  # -- Extra containers in the yjs pod, as written.
+  sidecars: []
   extraEnv: {}
+  # -- ServiceAccount of the yjs pod; empty uses the chart's.
+  serviceAccountName: ""
+  # livenessProbe: HTTP /healthz/live on the yjs port.
+  livenessProbe:
+    enabled: true
+    periodSeconds: 15
+    timeoutSeconds: 5
+  # readinessProbe: HTTP /healthz/ready on the yjs port.
+  readinessProbe:
+    enabled: true
+    periodSeconds: 10
+    timeoutSeconds: 5
+  # -- Extra environment variables as full Kubernetes `env` entries (e.g. valueFrom.secretKeyRef); they take precedence over extraEnv.
+  extraEnvVars: []
+  # -- Extra init containers in the yjs pod.
+  extraInitContainers: []
+  extraVolumes: []
+  extraVolumeMounts: []
 
 # CalDAV and CardDAV server. The OpenCloud proxy authenticates users and
 # forwards /caldav/, /carddav/ and their .well-known paths to it.
 radicale:
+  # -- Deploy Radicale and advertise its CalDAV/CardDAV endpoints. Leave disabled
+  # when another service provides calendars and contacts.
   enabled: false
   image:
     registry: "docker.io"
@@ -543,7 +601,7 @@ radicale:
     # -- Multi-arch index digest of the tag. Takes precedence over the tag;
     # clear it to float on the tag instead.
     # @default -- pinned, see values.yaml
-    digest: "sha256:95e6f17e3f606847d140780a57b654a755219bb56bbe94e6cf96e3e118964328"
+    digest: "sha256:497d9a480bdbbbf8666e0bc4fc1298d71694571043d42c688f0b5597757f2dd2"
     pullPolicy: "IfNotPresent"
     pullSecrets: []
   # -- Replaces the generated Radicale configuration file entirely when set.
@@ -555,6 +613,9 @@ radicale:
     accessMode: "ReadWriteOnce"
     storageClass: ""
     size: "5Gi"
+    # -- StatefulSet persistentVolumeClaimRetentionPolicy, as for the top-level
+    # persistence.retentionPolicy. Not applied to existingClaim.
+    retentionPolicy: {}
   resources:
     requests:
       cpu: "50m"
@@ -581,6 +642,30 @@ radicale:
   nodeSelector: {}
   affinity: {}
   tolerations: []
+  # -- PriorityClass for the radicale pod.
+  priorityClassName: ""
+  # -- Extra containers in the radicale pod, as written.
+  sidecars: []
+  # -- ServiceAccount of the radicale pod; empty uses the chart's.
+  serviceAccountName: ""
+  # livenessProbe: TCP on the radicale port.
+  livenessProbe:
+    enabled: true
+    periodSeconds: 15
+    timeoutSeconds: 5
+  # readinessProbe: TCP on the radicale port.
+  readinessProbe:
+    enabled: true
+    periodSeconds: 10
+    timeoutSeconds: 5
+  # -- Extra environment variables as plain name/value pairs; they replace chart-set variables of the same name.
+  extraEnv: {}
+  # -- Extra environment variables as full Kubernetes `env` entries (e.g. valueFrom.secretKeyRef); they take precedence over extraEnv.
+  extraEnvVars: []
+  # -- Extra init containers in the radicale pod.
+  extraInitContainers: []
+  extraVolumes: []
+  extraVolumeMounts: []
 
 # Apache Tika extracts text for full-text search. Enable the bundled
 # deployment, or point externalUrl at an existing Tika server.
@@ -624,6 +709,48 @@ tika:
   nodeSelector: {}
   affinity: {}
   tolerations: []
+  # -- PriorityClass for the tika pod.
+  priorityClassName: ""
+  # -- Extra containers in the tika pod, as written.
+  sidecars: []
+  # -- ServiceAccount of the tika pod; empty uses the chart's.
+  serviceAccountName: ""
+  # startupProbe: HTTP /tika on the tika port.
+  startupProbe:
+    enabled: true
+    periodSeconds: 5
+    failureThreshold: 30
+  # livenessProbe: HTTP /tika on the tika port.
+  livenessProbe:
+    enabled: true
+    periodSeconds: 15
+    timeoutSeconds: 5
+  # readinessProbe: HTTP /tika on the tika port.
+  readinessProbe:
+    enabled: true
+    periodSeconds: 10
+    timeoutSeconds: 5
+  # -- Extra environment variables as plain name/value pairs; they replace chart-set variables of the same name.
+  extraEnv: {}
+  # -- Extra environment variables as full Kubernetes `env` entries (e.g. valueFrom.secretKeyRef); they take precedence over extraEnv.
+  extraEnvVars: []
+  # -- Extra init containers in the tika pod.
+  extraInitContainers: []
+  extraVolumes: []
+  extraVolumeMounts: []
+
+# `helm test` checks that OpenCloud and its companions answer: the web port,
+# in topology split the storage pod's readiness, and yjs, Tika and Radicale
+# when the chart deploys them. The test pod uses the OpenCloud image and is
+# removed after a successful run; a failed one stays for its logs until the
+# next run. Installs and syncs never run it: only `helm test` and
+# `helmfile test` do; Argo CD skips it entirely.
+tests:
+  enabled: true
+  resources:
+    requests:
+      cpu: "10m"
+      memory: "32Mi"
 
 serviceAccount:
   create: true
@@ -706,6 +833,13 @@ nodeSelector: {}
 affinity: {}
 tolerations: []
 topologySpreadConstraints: []
+# -- PriorityClass for the OpenCloud pods (the storage pods in topology
+# split), e.g. so they are scheduled before less important workloads.
+priorityClassName: ""
+# -- Extra containers in the OpenCloud pod (the storage pods in topology
+# split), as written (e.g. a log shipper). For sidecars that must start
+# first, use extraInitContainers with restartPolicy: Always (Kubernetes 1.29+).
+sidecars: []
 # -- Extra environment variables as plain name/value pairs, for any OpenCloud
 # setting not exposed above. Overrides chart-generated values; extraEnvVars takes precedence.
 extraEnv: {}

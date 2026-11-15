@@ -1,0 +1,65 @@
+{{- if .Values.tests.enabled }}
+{{- $fullname := include "opencloud.fullname" . }}
+{{- $ns := .Release.Namespace }}
+{{- $checks := list (printf "opencloud http http://%s.%s.svc:%v/status.php" $fullname $ns .Values.service.port) }}
+{{- if eq (include "opencloud.split" .) "true" }}
+{{- /* Every storage pod by its own DNS name, so one unhealthy replica fails the test. */}}
+{{- range $i := until (int (include "opencloud.storageReplicas" .)) }}
+{{- $checks = append $checks (printf "storage-%d http http://%s-%d.%s-headless.%s.svc:9159/readyz" $i $fullname $i $fullname $ns) }}
+{{- end }}
+{{- end }}
+{{- if .Values.yjs.enabled }}
+{{- $checks = append $checks (printf "yjs http http://%s.%s.svc:1234/healthz/ready" (include "opencloud.componentFullname" (dict "component" "yjs" "context" .)) $ns) }}
+{{- end }}
+{{- if and .Values.tika.enabled (not .Values.tika.externalUrl) }}
+{{- $checks = append $checks (printf "tika http http://%s.%s.svc:9998/tika" (include "opencloud.componentFullname" (dict "component" "tika" "context" .)) $ns) }}
+{{- end }}
+{{- if .Values.radicale.enabled }}
+{{- $checks = append $checks (printf "radicale tcp %s.%s.svc:5232" (include "opencloud.componentFullname" (dict "component" "radicale" "context" .)) $ns) }}
+{{- end }}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ $fullname }}-test
+  namespace: {{ $ns | quote }}
+  labels:
+    {{- include "opencloud.testLabels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    # A failed run stays for its logs until the next `helm test`.
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  {{- include "common.images.renderPullSecrets" (dict "images" (list .Values.image) "context" $) | nindent 2 }}
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  {{- with .Values.nodeSelector }}
+  nodeSelector: {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.tolerations }}
+  tolerations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+  containers:
+    - name: test
+      image: {{ include "opencloud.image" . | quote }}
+      imagePullPolicy: {{ .Values.image.pullPolicy }}
+      command: [/bin/sh, -c]
+      args:
+        - {{ .Files.Get "files/helm-test.sh" | quote }}
+      env:
+        - name: CHECKS
+          value: {{ join "\n" $checks | quote }}
+      securityContext:
+        allowPrivilegeEscalation: false
+        privileged: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+      resources:
+        {{- toYaml .Values.tests.resources | nindent 8 }}
+{{- end }}

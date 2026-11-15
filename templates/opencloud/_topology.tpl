@@ -17,7 +17,8 @@
 
 {{/* Storage services whose state only one process may hold: the search
      index, the OCM invitation store and the guest-link tokens. With several
-     storage pods they run on the first pod only. */}}
+     storage pods they run on the first pod only. User and system storage
+     both run on every pod and share the metadata filesystem. */}}
 {{- define "opencloud.storageSingletons" -}}
 {{- list "search" "ocm" "auth-guest" | toYaml -}}
 {{- end -}}
@@ -110,9 +111,9 @@ WEB_HTTP: 9100
 {{- define "opencloud.splitEnv" -}}
 {{- $nats := .Values.nats -}}
 {{- $storage := printf "%s-headless.%s.svc.%s" (include "opencloud.fullname" .) .Release.Namespace .Values.clusterDomain -}}
-{{- $ocmHost := $storage -}}
+{{- $singletonHost := $storage -}}
 {{- if eq (include "opencloud.sharedData" .) "true" -}}
-{{- $ocmHost = printf "%s-0.%s" (include "opencloud.fullname" .) $storage -}}
+{{- $singletonHost = printf "%s-0.%s" (include "opencloud.fullname" .) $storage -}}
 {{- end -}}
 # Service registry, events, caches and stores in the external NATS.
 - name: MICRO_REGISTRY
@@ -166,7 +167,7 @@ WEB_HTTP: 9100
 - name: STORAGE_SYSTEM_DATA_SERVER_URL
   value: {{ printf "http://%s:9216/data" $storage | quote }}
 - name: OCM_OCM_STORAGE_DATA_SERVER_URL
-  value: {{ printf "http://%s:9280/data" $ocmHost | quote }}
+  value: {{ printf "http://%s:9280/data" $singletonHost | quote }}
 {{- end -}}
 
 {{/* Container environment for a role: opencloud.env, with the services to
@@ -259,8 +260,30 @@ WEB_HTTP: 9100
 {{- if and $autoscaling.enabled (gt (int $autoscaling.minReplicas) (int $autoscaling.maxReplicas)) -}}
 {{- fail "frontend.autoscaling.minReplicas must not exceed maxReplicas" -}}
 {{- end -}}
-{{- if and $autoscaling.enabled (not (dig "requests" "cpu" "" .Values.frontend.resources)) -}}
-{{- fail "frontend.autoscaling scales on CPU use relative to the request: set frontend.resources.requests.cpu" -}}
+{{- if and $autoscaling.enabled (not $autoscaling.metrics) -}}
+{{- if not (or $autoscaling.targetCPUUtilizationPercentage $autoscaling.targetMemoryUtilizationPercentage) -}}
+{{- fail "frontend.autoscaling needs targetCPUUtilizationPercentage, targetMemoryUtilizationPercentage or metrics" -}}
+{{- end -}}
+{{- /* Utilization is relative to the requests of every container that runs in
+       the pod: without one, the HPA cannot compute it and does not scale. */ -}}
+{{- $containers := list (dict "name" "frontend.resources" "resources" .Values.frontend.resources) -}}
+{{- range .Values.frontend.sidecars -}}
+{{- $containers = append $containers (dict "name" (printf "frontend.sidecars %s" (toString .name)) "resources" .resources) -}}
+{{- end -}}
+{{- range .Values.extraInitContainers -}}
+{{- if eq (toString .restartPolicy) "Always" -}}
+{{- $containers = append $containers (dict "name" (printf "extraInitContainers %s (a native sidecar)" (toString .name)) "resources" .resources) -}}
+{{- end -}}
+{{- end -}}
+{{- range $resource, $target := dict "cpu" $autoscaling.targetCPUUtilizationPercentage "memory" $autoscaling.targetMemoryUtilizationPercentage -}}
+{{- if $target -}}
+{{- range $containers -}}
+{{- if not (dig "requests" $resource "" (.resources | default dict)) -}}
+{{- fail (printf "frontend.autoscaling scales on %s use relative to the requests of every container in the pod: set resources.requests.%s for %s" $resource $resource .name) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- else if .Values.networkPolicy.nats.podSelector -}}
 {{- fail "networkPolicy.nats.podSelector is used only with topology split; topology single runs NATS inside the pod" -}}

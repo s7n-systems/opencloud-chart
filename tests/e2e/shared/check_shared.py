@@ -31,7 +31,10 @@ def names(token, folder):
     if status != 207:
         return status, set()
     hrefs = [e.text for e in ET.fromstring(raw).iter("{DAV:}href")]
-    return status, {urllib.parse.unquote(h.rstrip("/").rsplit("/", 1)[-1]) for h in hrefs[1:]}
+    # DAV does not require the collection's own response to come first.
+    parent = urllib.parse.urlsplit(f"{check.OC}/remote.php/webdav/{folder}/").path.rstrip("/")
+    return status, {urllib.parse.unquote(urllib.parse.urlsplit(h).path.rstrip("/").rsplit("/", 1)[-1])
+                    for h in hrefs if urllib.parse.urlsplit(h).path.rstrip("/") != parent}
 
 
 def expected(marker):

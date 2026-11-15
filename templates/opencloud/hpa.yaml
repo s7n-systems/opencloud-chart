@@ -19,19 +19,23 @@ spec:
     name: {{ include "opencloud.componentFullname" $ctx }}
   minReplicas: {{ $autoscaling.minReplicas }}
   maxReplicas: {{ $autoscaling.maxReplicas }}
+  {{- with $autoscaling.behavior }}
   behavior:
-    # Remove one pod at a time once the load has stayed low.
-    scaleDown:
-      stabilizationWindowSeconds: {{ $autoscaling.scaleDownStabilizationWindowSeconds }}
-      policies:
-        - type: Pods
-          value: 1
-          periodSeconds: 60
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   metrics:
+    {{- if $autoscaling.metrics }}
+    {{- toYaml $autoscaling.metrics | nindent 4 }}
+    {{- else }}
+    {{- range $resource, $target := dict "cpu" $autoscaling.targetCPUUtilizationPercentage "memory" $autoscaling.targetMemoryUtilizationPercentage }}
+    {{- if $target }}
     - type: Resource
       resource:
-        name: cpu
+        name: {{ $resource }}
         target:
           type: Utilization
-          averageUtilization: {{ $autoscaling.targetCPUUtilizationPercentage }}
+          averageUtilization: {{ $target }}
+    {{- end }}
+    {{- end }}
+    {{- end }}
 {{- end }}

@@ -304,6 +304,7 @@ class ChartChecks(unittest.TestCase):
         docs = render()
         self.assertEqual([doc['metadata']['name'] for doc in docs if doc['kind'] == 'Deployment'], ['opencloud-yjs'])
         self.assertNotIn('opencloud-radicale', [doc['metadata']['name'] for doc in docs])
+        self.assertEqual(env(docs)['FRONTEND_DISABLE_RADICALE']['value'], 'true')
         self.assertEqual(env(docs)['WEB_OPTION_YJS_SERVER_URL']['value'], 'wss://cloud.example.org/yjs')
         docs = render({'yjs': {'enabled': False}})
         self.assertFalse(any(doc['kind'] == 'Deployment' for doc in docs))
@@ -320,6 +321,7 @@ class ChartChecks(unittest.TestCase):
             self.assertEqual(by_endpoint[endpoint]['additional_headers'], [{'X-Script-Name': script}])
         self.assertIn('/app/', by_endpoint)
         variables = env(docs)
+        self.assertEqual(variables['FRONTEND_DISABLE_RADICALE']['value'], 'false')
         self.assertEqual(variables['WEB_OPTION_YJS_SERVER_URL']['value'], 'wss://cloud.example.org/yjs')
         self.assertEqual(variables['SEARCH_EXTRACTOR_TIKA_TIKA_URL']['value'], 'http://opencloud-tika:9998')
         self.assertEqual(variables['FRONTEND_FULL_TEXT_SEARCH_ENABLED']['value'], 'true')
@@ -343,7 +345,8 @@ class ChartChecks(unittest.TestCase):
 
     def test_radicale_only_accepts_its_opencloud_server(self):
         self.assertFalse(any(d['kind'] == 'NetworkPolicy' for d in render()))
-        docs = render({'radicale': {'enabled': True}, 'tika': {'enabled': True},
+        # Without the helm test pod, which test_network_policies_admit_the_test_pod covers.
+        docs = render({'radicale': {'enabled': True}, 'tika': {'enabled': True}, 'tests': {'enabled': False},
                        'fullnameOverride': 'files',
                        'additionalLabels': {'app.kubernetes.io/component': 'override'}})
         policy = find(docs, 'NetworkPolicy', 'files-radicale')
@@ -609,7 +612,7 @@ class ChartChecks(unittest.TestCase):
         self.assertEqual(claim['metadata']['annotations']['helm.sh/resource-policy'], 'keep')
         volumes = {v['name']: v for v in storage['spec']['template']['spec']['volumes']}
         self.assertEqual(volumes['data'], {'name': 'data', 'persistentVolumeClaim': {'claimName': 'opencloud-data'}})
-        # search, ocm and auth-guest run on the first pod only; the wrapper adds them there.
+        # User and system storage run on every pod; search, ocm and auth-guest are singletons.
         c = storage['spec']['template']['spec']['containers'][0]
         variables = {e['name']: e.get('value') for e in c['env']}
         self.assertEqual(variables['OC_RUN_SERVICES'], 'storage-users,storage-system')
@@ -618,11 +621,12 @@ class ChartChecks(unittest.TestCase):
         self.assertEqual(c['command'][:2], ['/bin/sh', '-ec'])
         self.assertIn('${HOSTNAME##*-}', c['command'][2])
         self.assertIn('exec opencloud server', c['command'][2])
-        # The OCM data endpoint names the first pod; the storages stay load-balanced.
+        # OCM data goes to the first pod; user and system data stay load-balanced.
         frontend_env = {e['name']: e.get('value') for e in frontend['spec']['template']['spec']['containers'][0]['env']}
         for env_vars in (variables, frontend_env):
             self.assertEqual(env_vars['OCM_OCM_STORAGE_DATA_SERVER_URL'], 'http://opencloud-0.opencloud-headless.cloud.svc.cluster.local:9280/data')
             self.assertEqual(env_vars['STORAGE_USERS_DATA_SERVER_URL'], 'http://opencloud-headless.cloud.svc.cluster.local:9158/data')
+            self.assertEqual(env_vars['STORAGE_SYSTEM_DATA_SERVER_URL'], 'http://opencloud-headless.cloud.svc.cluster.local:9216/data')
         # An existing RWX claim is used as is, without a chart-managed one.
         docs = self.split({**self.SHARED, 'persistence': {'data': {'shared': True, 'accessMode': 'ReadWriteMany', 'existingClaim': 'nas'}}})
         self.assertFalse([d for d in docs if d['kind'] == 'PersistentVolumeClaim'])
@@ -706,7 +710,9 @@ class ChartChecks(unittest.TestCase):
         policies = lambda docs: {d['metadata']['name']: d['spec'] for d in docs if d['kind'] == 'NetworkPolicy' and d['metadata']['name'] != 'opencloud-radicale'}
         self.assertEqual(policies(self.split()), {})
         ingress = [{'namespaceSelector': {'matchLabels': {'kubernetes.io/metadata.name': 'ingress'}}}]
-        docs = self.split({'metrics': {'enabled': True},
+        # Without yjs and the helm test pod, which test_companion_network_policies and
+        # test_network_policies_admit_the_test_pod cover.
+        docs = self.split({'metrics': {'enabled': True}, 'tests': {'enabled': False}, 'yjs': {'enabled': False},
                            'nats': {'address': 'nats:4222', 'existingSecret': 'nats'},
                            'networkPolicy': {'enabled': True, 'ingressFrom': ingress, 'nats': {'podSelector': {'app': 'nats'}}}})
         found = policies(docs)
@@ -733,7 +739,7 @@ class ChartChecks(unittest.TestCase):
         self.assertEqual(nats[(6222,)], [{'podSelector': {'matchLabels': {'app': 'nats'}}}])
         self.assertEqual(found['opencloud-nats-clients']['podSelector'], {'matchLabels': {'app': 'nats'}})
         # Single mode: one policy for the server pod, web port only.
-        single = policies(render({'networkPolicy': {'enabled': True}}))
+        single = policies(render({'networkPolicy': {'enabled': True}, 'tests': {'enabled': False}, 'yjs': {'enabled': False}}))
         self.assertEqual(list(single), ['opencloud-server'])
         self.assertEqual(rules(single['opencloud-server']), {(9200,): None})
         self.assertIn('topology split', render({'networkPolicy': {'nats': {'podSelector': {'app': 'nats'}}}}, succeeds=False))
@@ -951,6 +957,359 @@ class ChartChecks(unittest.TestCase):
                 {**self.THEME, 'files': {'assets/logo.svg': bad}} for bad in ('A', 'AAA', 'AAAAA', 'AA=A', 'AA===', 'AAAA\nAAAA')]:
             with self.subTest(values=invalid):
                 render({'web': {'theme': invalid}}, succeeds=False)
+
+
+SPLIT_BASE = {'domain': 'example.org', 'topology': 'split', 'nats': {'address': 'nats:4222'},
+              'serviceSecrets': {'existingSecret': 'service'},
+              'identity': {'mode': 'oidc', 'oidc': {'issuer': 'https://kc.example.org/realms/oc', 'autoprovision': False},
+                           'ldap': {'uri': 'ldaps://ldap:636', 'bindDn': 'cn=b', 'existingSecret': 'ldap', 'userBaseDn': 'ou=u',
+                                    'groupBaseDn': 'ou=g', 'writeEnabled': False}}}
+
+
+def render_notes(values=None, raw_defaults=False):
+    """templates/NOTES.txt as installs print it. helm template skips NOTES.txt, so a copy
+    of the chart wraps it in a define and prints that from a template."""
+    import shutil
+    with tempfile.TemporaryDirectory() as directory:
+        chart = Path(directory) / 'opencloud'
+        shutil.copytree(ROOT, chart, ignore=shutil.ignore_patterns('.git', 'tests', '__pycache__', 'rendered*', 'dist'))
+        notes = (chart / 'templates' / 'NOTES.txt').read_text()
+        (chart / 'templates' / '_notescheck.tpl').write_text('{{- define "notescheck" -}}\n' + notes + '\n{{- end -}}\n')
+        (chart / 'templates' / 'notescheck.yaml').write_text('notes: {{ include "notescheck" . | toJson }}\n')
+        settings = dict(values or {}) if raw_defaults else {**BASE, **(values or {})}
+        (Path(directory) / 'values.yaml').write_text(yaml.safe_dump(settings))
+        result = subprocess.run(['helm', 'template', 'opencloud', str(chart), '--namespace', 'cloud', '-f', str(Path(directory) / 'values.yaml'),
+                                 '--show-only', 'templates/notescheck.yaml'], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    return yaml.safe_load(result.stdout)['notes']
+
+
+class ExtrasChecks(unittest.TestCase):
+    def test_notes_with_only_external_url(self):
+        # The integration suites supply an in-cluster URL without host/domain.
+        values = yaml.safe_load((ROOT / 'tests/e2e/values.yaml').read_text())
+        for url in ('http://opencloud.oc.svc.cluster.local:9200',
+                    'http://opencloud.oc-migrate.svc.cluster.local:9200'):
+            with self.subTest(url=url):
+                notes = render_notes({**values, 'externalUrl': url}, raw_defaults=True)
+                self.assertIn(f"OpenCloud's public URL: {url}", notes)
+                self.assertIn(f'route {url.removeprefix("http://")} to Service opencloud port 9200 yourself.', notes)
+
+    def test_helm_test_pod(self):
+        docs = render({'yjs': {'enabled': True}, 'tika': {'enabled': True}, 'radicale': {'enabled': True}})
+        pod = find(docs, 'Pod')
+        self.assertEqual(pod['metadata']['name'], 'opencloud-test')
+        self.assertEqual(pod['metadata']['annotations'], {'helm.sh/hook': 'test', 'helm.sh/hook-delete-policy': 'before-hook-creation,hook-succeeded'})
+        labels = pod['metadata']['labels']
+        self.assertEqual((labels['app.kubernetes.io/component'], labels['app.kubernetes.io/name']), ('test', 'opencloud-test'))
+        spec = pod['spec']
+        self.assertFalse(spec['automountServiceAccountToken'])
+        self.assertEqual(spec['securityContext']['seccompProfile'], {'type': 'RuntimeDefault'})
+        c = spec['containers'][0]
+        self.assertEqual(c['image'], container(docs)['image'])
+        self.assertTrue(c['securityContext']['readOnlyRootFilesystem'])
+        self.assertEqual(c['securityContext']['capabilities'], {'drop': ['ALL']})
+        self.assertIn('requests', c['resources'])
+        self.assertEqual(c['args'], [(ROOT / 'files' / 'helm-test.sh').read_text()])
+        checks = next(e['value'] for e in c['env'] if e['name'] == 'CHECKS').split('\n')
+        self.assertEqual(checks, ['opencloud http http://opencloud.cloud.svc:9200/status.php',
+                                  'yjs http http://opencloud-yjs.cloud.svc:1234/healthz/ready',
+                                  'tika http http://opencloud-tika.cloud.svc:9998/tika',
+                                  'radicale tcp opencloud-radicale.cloud.svc:5232'])
+        # No workload selects the test pod.
+        for d in docs:
+            selector = (d.get('spec') or {}).get('selector') or {}
+            selector = selector.get('matchLabels', selector) if isinstance(selector, dict) else {}
+            if selector and d['kind'] in ('Service', 'Deployment', 'StatefulSet'):
+                self.assertFalse(all(labels.get(k) == v for k, v in selector.items()), d['metadata']['name'])
+        # Split mode adds the storage pods' readiness; an external Tika is not checked.
+        docs = render({**SPLIT_BASE, 'yjs': {'enabled': False}, 'tika': {'externalUrl': 'http://tika:9998'}}, raw_defaults=True)
+        checks = next(e['value'] for e in find(docs, 'Pod')['spec']['containers'][0]['env'] if e['name'] == 'CHECKS').split('\n')
+        self.assertEqual(checks, ['opencloud http http://opencloud.cloud.svc:9200/status.php',
+                                  'storage-0 http http://opencloud-0.opencloud-headless.cloud.svc:9159/readyz'])
+        # Each storage pod is checked by its own DNS name, so one unhealthy replica fails the test.
+        docs = render({**SPLIT_BASE, 'storagePods': {'replicas': 3}, 'persistence': {'data': {'shared': True, 'accessMode': 'ReadWriteMany'}}}, raw_defaults=True)
+        checks = next(e['value'] for e in find(docs, 'Pod')['spec']['containers'][0]['env'] if e['name'] == 'CHECKS').split('\n')
+        self.assertEqual([c for c in checks if c.startswith('storage')],
+                         [f'storage-{i} http http://opencloud-{i}.opencloud-headless.cloud.svc:9159/readyz' for i in range(3)])
+        self.assertFalse([d for d in render({'tests': {'enabled': False}}) if d['kind'] == 'Pod'])
+        # The chart package keeps templates/tests (.helmignore excludes only the top-level tests/).
+        with tempfile.TemporaryDirectory() as directory:
+            subprocess.run(['helm', 'package', str(ROOT), '-d', directory], capture_output=True, check=True)
+            archive = next(Path(directory).glob('*.tgz'))
+            listing = subprocess.run(['tar', 'tzf', str(archive)], capture_output=True, text=True, check=True).stdout.split()
+        self.assertIn('opencloud/templates/tests/test.yaml', listing)
+        self.assertIn('opencloud/files/helm-test.sh', listing)
+        self.assertFalse([f for f in listing if f.startswith('opencloud/tests/')])
+
+    def test_network_policies_admit_the_test_pod(self):
+        peer = {'podSelector': {'matchLabels': {'app.kubernetes.io/instance': 'opencloud', 'app.kubernetes.io/component': 'test'}}}
+        ingress = [{'namespaceSelector': {'matchLabels': {'kubernetes.io/metadata.name': 'ingress'}}}]
+        docs = render({**SPLIT_BASE, 'radicale': {'enabled': True}, 'networkPolicy': {'enabled': True, 'ingressFrom': ingress}}, raw_defaults=True)
+        policies = {d['metadata']['name']: d['spec'] for d in docs if d['kind'] == 'NetworkPolicy'}
+        rules = lambda name: [r for r in policies[name]['ingress'] if r.get('from') == [peer]]
+        self.assertEqual([[p['port'] for p in r['ports']] for r in rules('opencloud-frontend')], [[9200, 9205]])
+        self.assertEqual([[p['port'] for p in r['ports']] for r in rules('opencloud-server')], [[9159]])
+        self.assertIn(peer, policies['opencloud-radicale']['ingress'][0]['from'])
+        docs = render({**SPLIT_BASE, 'radicale': {'enabled': True}, 'tests': {'enabled': False}, 'networkPolicy': {'enabled': True}}, raw_defaults=True)
+        self.assertNotIn('component: test', yaml.safe_dump([d for d in docs if d['kind'] == 'NetworkPolicy']))
+
+    def test_scheduling_extras(self):
+        sidecar = {'name': 'shipper', 'image': 'example.org/shipper@sha256:' + '0' * 64}
+        docs = render({'priorityClassName': 'files', 'sidecars': [sidecar], 'persistence': {'retentionPolicy': {'whenDeleted': 'Delete'}},
+                       'service': {'type': 'LoadBalancer', 'loadBalancerClass': 'service.k8s.aws/nlb'},
+                       'yjs': {'enabled': True, 'priorityClassName': 'low', 'sidecars': [sidecar]},
+                       'tika': {'enabled': True, 'priorityClassName': 'batch', 'sidecars': [sidecar]},
+                       'radicale': {'enabled': True, 'priorityClassName': 'cal', 'sidecars': [sidecar],
+                                    'persistence': {'retentionPolicy': {'whenScaled': 'Delete'}}}})
+        statefulset = workload(docs)
+        self.assertEqual(statefulset['spec']['persistentVolumeClaimRetentionPolicy'], {'whenDeleted': 'Delete'})
+        self.assertEqual(statefulset['spec']['template']['spec']['priorityClassName'], 'files')
+        self.assertEqual([c['name'] for c in statefulset['spec']['template']['spec']['containers']], ['opencloud', 'shipper'])
+        for kind, name, priority, main in [('Deployment', 'opencloud-yjs', 'low', 'yjs'), ('Deployment', 'opencloud-tika', 'batch', 'tika'),
+                                           ('StatefulSet', 'opencloud-radicale', 'cal', 'radicale')]:
+            pod = find(docs, kind, name)['spec']['template']['spec']
+            self.assertEqual(pod['priorityClassName'], priority)
+            self.assertEqual([c['name'] for c in pod['containers']], [main, 'shipper'])
+        self.assertEqual(find(docs, 'StatefulSet', 'opencloud-radicale')['spec']['persistentVolumeClaimRetentionPolicy'], {'whenScaled': 'Delete'})
+        self.assertEqual(find(docs, 'Service', 'opencloud')['spec']['loadBalancerClass'], 'service.k8s.aws/nlb')
+        # topology split: the frontend has its own settings; the top-level ones stay with the storage pods.
+        docs = render({**SPLIT_BASE, 'priorityClassName': 'files', 'sidecars': [sidecar],
+                       'frontend': {'priorityClassName': 'web', 'sidecars': [{**sidecar, 'name': 'proxy'}]}}, raw_defaults=True)
+        frontend = find(docs, 'Deployment', 'opencloud-frontend')['spec']['template']['spec']
+        self.assertEqual(frontend['priorityClassName'], 'web')
+        self.assertEqual([c['name'] for c in frontend['containers']], ['opencloud', 'proxy'])
+        self.assertEqual(workload(docs)['spec']['template']['spec']['priorityClassName'], 'files')
+        # Defaults add nothing, and loadBalancerClass only applies to LoadBalancer Services.
+        docs = render({'service': {'loadBalancerClass': 'x'}, 'radicale': {'enabled': True}})
+        self.assertNotIn('persistentVolumeClaimRetentionPolicy', workload(docs)['spec'])
+        self.assertNotIn('priorityClassName', workload(docs)['spec']['template']['spec'])
+        self.assertFalse(any('loadBalancerClass' in d['spec'] for d in docs if d['kind'] == 'Service'))
+        for invalid in [{'persistence': {'retentionPolicy': {'whenDeleted': 'Keep'}}}, {'sidecars': [{'image': 'x'}]},
+                        {'radicale': {'persistence': {'retentionPolicy': {'bogus': 'Delete'}}}}]:
+            with self.subTest(values=invalid):
+                render(invalid, succeeds=False)
+
+    def test_artifact_hub_images_match_values(self):
+        chart = yaml.safe_load((ROOT / 'Chart.yaml').read_text())
+        listed = sorted(entry['image'] for entry in yaml.safe_load(chart['annotations']['artifacthub.io/images']))
+        values = yaml.safe_load((ROOT / 'values.yaml').read_text())
+        roots = [values['image'], values['yjs']['image'], values['radicale']['image'], values['tika']['image']]
+        self.assertEqual(listed, sorted(f"{r['registry']}/{r['repository']}:{r['tag']}@{r['digest']}" for r in roots))
+        self.assertEqual(chart['appVersion'], values['image']['tag'])
+        for key in ('artifacthub.io/changes', 'artifacthub.io/links'):
+            self.assertIsInstance(yaml.safe_load(chart['annotations'][key]), list)
+        # Artifact Hub's fixed category list.
+        self.assertIn(chart['annotations']['artifacthub.io/category'], ('storage', 'web-applications'))
+
+    def test_notes(self):
+        notes = render_notes()
+        self.assertIn('OpenCloud\'s public URL: https://cloud.example.org', notes)
+        self.assertIn('No Ingress or HTTPRoute is enabled', notes)
+        self.assertIn("get secret admin \\\n    -o jsonpath='{.data.adminPassword}'", notes)
+        self.assertIn('helm test opencloud --namespace cloud', notes)
+        self.assertNotIn('WARNING', notes)
+        # https only when an Ingress tls entry covers the host, exactly or with a one-label wildcard.
+        for tls, terminates in [([{'hosts': ['cloud.example.org']}], True), ([{'hosts': ['*.example.org']}], True),
+                                ([{'hosts': ['*.org']}], False), ([], False)]:
+            with self.subTest(tls=tls):
+                notes = render_notes({'ingress': {'enabled': True, 'tls': tls}})
+                self.assertEqual('and terminates TLS' in notes, terminates)
+                self.assertEqual('add the host to ingress.tls' in notes, not terminates)
+        notes = render_notes({'gatewayAPI': {'httpRoute': {'enabled': True, 'parentRefs': [{'name': 'gw'}], 'hostnames': ['files.example.org']}}})
+        self.assertIn('\n  files.example.org\n', notes)
+        self.assertIn("https where a listener terminates TLS", notes)
+        notes = render_notes({**SPLIT_BASE, 'frontend': {'replicas': 3}, 'tests': {'enabled': False}}, raw_defaults=True)
+        self.assertIn('topology split: 1 storage pod(s) and the opencloud-frontend Deployment (3 pods)', notes)
+        self.assertIn('Users sign in through https://kc.example.org/realms/oc; their roles come from the\n"roles" claim', notes)
+        self.assertNotIn('helm test', notes)
+        self.assertIn('topology split without networkPolicy.enabled', notes)
+        notes = render_notes({'persistence': {'enabled': False}, 'insecure': True, 'demoUsers': True, 'basicAuth': True,
+                              'admin': {'existingSecret': '', 'password': 'x'}, 'metrics': {'token': {'value': 't'}}})
+        for warning in ('persistence.enabled is false', 'insecure is true', 'demoUsers is true', 'basicAuth is true',
+                        '(admin.password, metrics.token.value): prefer the existingSecret settings'):
+            self.assertIn(warning, notes)
+        self.assertIn('get secret opencloud-env', notes)
+        # kubectl's jsonpath needs dots in a key escaped.
+        notes = render_notes({'admin': {'existingSecret': 'admin', 'passwordSecretKey': 'admin.password'}})
+        self.assertIn("-o jsonpath='{.data.admin\\.password}' | base64 --decode", notes)
+
+
+class HelmTestScriptChecks(unittest.TestCase):
+    """files/helm-test.sh against local servers, with the local curl and nc."""
+
+    def serve(self, handler):
+        import socket
+        import threading
+        server = socket.create_server(('127.0.0.1', 0))
+        self.addCleanup(server.close)
+
+        def run():
+            while True:
+                try:
+                    connection, _ = server.accept()
+                except OSError:
+                    return
+                with connection:
+                    handler(connection)
+        threading.Thread(target=run, daemon=True).start()
+        return server.getsockname()[1]
+
+    def answer(self, status, headers=''):
+        def handler(connection):
+            connection.recv(4096)
+            connection.sendall(f'HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n{headers}\r\n'.encode())
+        return f'http://127.0.0.1:{self.serve(handler)}/'
+
+    def run_checks(self, checks):
+        result = subprocess.run(['sh', str(ROOT / 'files' / 'helm-test.sh')], env={**os.environ, 'CHECKS': '\n'.join(checks)},
+                                capture_output=True, text=True, timeout=60)
+        return result.returncode, result.stdout
+
+    def test_http_requires_exactly_200(self):
+        code, output = self.run_checks([f'ok http {self.answer("200 OK")}'])
+        self.assertEqual((code, output), (0, 'ok    ok: HTTP 200\nall checks passed\n'))
+        for status, headers in [('204 No Content', ''), ('302 Found', 'Location: http://127.0.0.1:1/\r\n'), ('503 Service Unavailable', '')]:
+            with self.subTest(status=status):
+                code, output = self.run_checks([f'web http {self.answer(status, headers)}'])
+                self.assertEqual(code, 1)
+                self.assertIn(f'FAIL  web: expected HTTP 200, got {status[:3]}', output)
+
+    def test_tcp_and_unreachable(self):
+        port = self.serve(lambda c: None)
+        code, output = self.run_checks([f'radicale tcp 127.0.0.1:{port}', 'closed tcp 127.0.0.1:1', 'down http http://127.0.0.1:1/'])
+        self.assertEqual(code, 1)
+        self.assertIn('ok    radicale: connected', output)
+        self.assertIn('FAIL  closed: cannot connect to 127.0.0.1:1', output)
+        self.assertIn('FAIL  down: no HTTP answer from http://127.0.0.1:1/', output)
+        self.assertIn('2 check(s) failed', output)
+
+    def test_unknown_type_fails(self):
+        code, output = self.run_checks(['x ftp ftp://example.org/'])
+        self.assertEqual(code, 1)
+        self.assertIn("FAIL  x: unknown check type 'ftp'", output)
+
+
+class ReviewChecks(unittest.TestCase):
+    """Autoscaling, anti-affinity, companion policies and companion options."""
+
+    def split(self, extra=None, succeeds=True):
+        return render({**SPLIT_BASE, **(extra or {})}, succeeds=succeeds, raw_defaults=True)
+
+    def hpa(self, autoscaling, **extra):
+        return find(self.split({'frontend': {'autoscaling': {'enabled': True, **autoscaling}, **extra}}), 'HorizontalPodAutoscaler')['spec']
+
+    def test_autoscaling_targets_and_behavior(self):
+        spec = self.hpa({})
+        self.assertEqual(spec['metrics'], [{'type': 'Resource', 'resource': {'name': 'cpu', 'target': {'type': 'Utilization', 'averageUtilization': 80}}}])
+        # The default behavior keeps the previous scale-down: one pod per minute after ten minutes.
+        self.assertEqual(spec['behavior'], {'scaleDown': {'stabilizationWindowSeconds': 600, 'policies': [{'type': 'Pods', 'value': 1, 'periodSeconds': 60}]}})
+        spec = self.hpa({'targetCPUUtilizationPercentage': '', 'targetMemoryUtilizationPercentage': 75, 'behavior': None},
+                        resources={'requests': {'memory': '1Gi'}})
+        self.assertEqual(spec['metrics'], [{'type': 'Resource', 'resource': {'name': 'memory', 'target': {'type': 'Utilization', 'averageUtilization': 75}}}])
+        self.assertNotIn('behavior', spec)
+        custom = [{'type': 'Pods', 'pods': {'metric': {'name': 'http_requests'}, 'target': {'type': 'AverageValue', 'averageValue': '100'}}}]
+        # Raw metrics replace the targets, so the requests they would need are not checked.
+        spec = self.hpa({'metrics': custom}, resources={}, sidecars=[{'name': 'shipper', 'image': 'x'}])
+        self.assertEqual(spec['metrics'], custom)
+        self.split({'frontend': {'autoscaling': {'scaleDownStabilizationWindowSeconds': 600}}}, succeeds=False)
+
+    def test_autoscaling_requires_requests_on_every_container(self):
+        sidecar = {'name': 'shipper', 'image': 'x', 'resources': {'requests': {'cpu': '10m', 'memory': '16Mi'}}}
+        self.hpa({}, sidecars=[sidecar])
+        for extra, message in [
+            ({'frontend': {'autoscaling': {'enabled': True}, 'sidecars': [{'name': 'shipper', 'image': 'x'}]}}, 'requests.cpu for frontend.sidecars shipper'),
+            ({'frontend': {'autoscaling': {'enabled': True}}, 'extraInitContainers': [{'name': 'proxy', 'image': 'x', 'restartPolicy': 'Always'}]},
+             'requests.cpu for extraInitContainers proxy (a native sidecar)'),
+            ({'frontend': {'autoscaling': {'enabled': True, 'targetMemoryUtilizationPercentage': 70}, 'sidecars': [{**sidecar, 'resources': {'requests': {'cpu': '10m'}}}]}},
+             'requests.memory for frontend.sidecars shipper'),
+            ({'frontend': {'autoscaling': {'enabled': True}, 'resources': {'requests': {'cpu': None, 'memory': '1Gi'}}}}, 'requests.cpu for frontend.resources'),
+            ({'frontend': {'autoscaling': {'enabled': True, 'targetCPUUtilizationPercentage': ''}}}, 'needs targetCPUUtilizationPercentage'),
+        ]:
+            with self.subTest(message=message):
+                self.assertIn(message, self.split(extra, succeeds=False))
+        # Ordinary init containers finish before the pod runs and do not count.
+        self.split({'frontend': {'autoscaling': {'enabled': True}}, 'extraInitContainers': [{'name': 'copy', 'image': 'x'}]})
+        # Without autoscaling nothing is required.
+        self.split({'frontend': {'sidecars': [{'name': 'shipper', 'image': 'x'}]}})
+
+    def test_frontend_anti_affinity_preset(self):
+        pod = lambda extra: find(self.split({'frontend': extra}), 'Deployment', 'opencloud-frontend')['spec']['template']['spec']
+        selector = {'matchLabels': {'app.kubernetes.io/name': 'opencloud', 'app.kubernetes.io/instance': 'opencloud', 'app.kubernetes.io/component': 'frontend'}}
+        term = {'labelSelector': selector, 'topologyKey': 'kubernetes.io/hostname'}
+        self.assertEqual(pod({'podAntiAffinityPreset': 'soft'})['affinity'],
+                         {'podAntiAffinity': {'preferredDuringSchedulingIgnoredDuringExecution': [{'weight': 100, 'podAffinityTerm': term}]}})
+        self.assertEqual(pod({'podAntiAffinityPreset': 'hard'})['affinity'],
+                         {'podAntiAffinity': {'requiredDuringSchedulingIgnoredDuringExecution': [term]}})
+        explicit = {'nodeAffinity': {'requiredDuringSchedulingIgnoredDuringExecution': {'nodeSelectorTerms': [{'matchExpressions': [{'key': 'web', 'operator': 'Exists'}]}]}}}
+        self.assertEqual(pod({'podAntiAffinityPreset': 'hard', 'affinity': explicit})['affinity'], explicit)
+        self.assertNotIn('affinity', pod({}))
+        # Only the frontend: the storage pods keep their own scheduling.
+        self.assertNotIn('affinity', workload(self.split({'frontend': {'podAntiAffinityPreset': 'soft'}}))['spec']['template']['spec'])
+        self.split({'frontend': {'podAntiAffinityPreset': 'always'}}, succeeds=False)
+
+    def test_companion_network_policies(self):
+        test_peer = {'podSelector': {'matchLabels': {'app.kubernetes.io/instance': 'opencloud', 'app.kubernetes.io/component': 'test'}}}
+        ingress = [{'namespaceSelector': {'matchLabels': {'kubernetes.io/metadata.name': 'ingress'}}}]
+        docs = self.split({'yjs': {'enabled': True}, 'tika': {'enabled': True}, 'networkPolicy': {'enabled': True, 'ingressFrom': ingress}})
+        policies = {d['metadata']['name']: d['spec'] for d in docs if d['kind'] == 'NetworkPolicy'}
+        yjs, tika = policies['opencloud-yjs'], policies['opencloud-tika']
+        self.assertEqual(yjs['podSelector']['matchLabels']['app.kubernetes.io/component'], 'yjs')
+        self.assertEqual([p['port'] for p in yjs['ingress'][0]['ports']], [1234])
+        self.assertEqual(yjs['ingress'][0]['from'][0]['podSelector']['matchLabels']['app.kubernetes.io/component'], 'frontend')
+        self.assertIn(test_peer, yjs['ingress'][0]['from'])
+        self.assertEqual([p['port'] for p in tika['ingress'][0]['ports']], [9998])
+        self.assertEqual(tika['ingress'][0]['from'][0]['podSelector']['matchExpressions'],
+                         [{'key': 'app.kubernetes.io/component', 'operator': 'In', 'values': ['server', 'frontend']}])
+        # yjs calls OpenCloud's Service directly: admitted to port 9200 next to ingressFrom.
+        web = [r for r in policies['opencloud-frontend']['ingress'] if [p['port'] for p in r['ports']] == [9200]]
+        self.assertEqual([r['from'] for r in web], [ingress, [{'podSelector': {'matchLabels': {
+            'app.kubernetes.io/name': 'opencloud', 'app.kubernetes.io/instance': 'opencloud', 'app.kubernetes.io/component': 'yjs'}}}]])
+        # In single mode the proxy runs in the server pod.
+        docs = render({'yjs': {'enabled': True}, 'networkPolicy': {'enabled': True}})
+        yjs = find(docs, 'NetworkPolicy', 'opencloud-yjs')['spec']
+        self.assertEqual(yjs['ingress'][0]['from'][0]['podSelector']['matchLabels']['app.kubernetes.io/component'], 'server')
+        # Off without networkPolicy.enabled, and without the bundled Tika.
+        names = {d['metadata']['name'] for d in render({'yjs': {'enabled': True}, 'tika': {'enabled': True}}) if d['kind'] == 'NetworkPolicy'}
+        self.assertEqual(names, set())
+        names = {d['metadata']['name'] for d in render({'tika': {'externalUrl': 'http://tika:9998'}, 'networkPolicy': {'enabled': True}}) if d['kind'] == 'NetworkPolicy'}
+        self.assertNotIn('opencloud-tika', names)
+
+    def test_companion_options(self):
+        extras = {'serviceAccountName': 'own', 'extraEnv': {'PORT': '9999', 'PLAIN': 'x'},
+                  'extraEnvVars': [{'name': 'TOKEN', 'valueFrom': {'secretKeyRef': {'name': 's', 'key': 'k'}}}, {'name': 'PLAIN', 'value': 'from-vars'}],
+                  'extraVolumes': [{'name': 'ca', 'configMap': {'name': 'ca'}}],
+                  'extraVolumeMounts': [{'name': 'ca', 'mountPath': '/etc/ssl/custom', 'readOnly': True}],
+                  'extraInitContainers': [{'name': 'prepare', 'image': 'x'}],
+                  'livenessProbe': {'enabled': False}, 'readinessProbe': {'enabled': True, 'periodSeconds': 30, 'timeoutSeconds': 3}}
+        docs = render({'yjs': {'enabled': True, **extras}, 'radicale': {'enabled': True, **extras}, 'tika': {'enabled': True, **extras}})
+        for kind, name, ready in [('Deployment', 'opencloud-yjs', {'httpGet': {'path': '/healthz/ready', 'port': 'http'}}),
+                                  ('StatefulSet', 'opencloud-radicale', {'tcpSocket': {'port': 'http'}}),
+                                  ('Deployment', 'opencloud-tika', {'httpGet': {'path': '/tika', 'port': 'http'}})]:
+            with self.subTest(name=name):
+                pod = find(docs, kind, name)['spec']['template']['spec']
+                c = pod['containers'][0]
+                variables = {e['name']: e for e in c['env']}
+                self.assertEqual(pod['serviceAccountName'], 'own')
+                self.assertEqual([i['name'] for i in pod['initContainers']], ['prepare'])
+                self.assertIn({'name': 'ca', 'configMap': {'name': 'ca'}}, pod['volumes'])
+                self.assertIn({'name': 'ca', 'mountPath': '/etc/ssl/custom', 'readOnly': True}, c['volumeMounts'])
+                self.assertEqual(variables['TOKEN']['valueFrom'], {'secretKeyRef': {'name': 's', 'key': 'k'}})
+                # extraEnvVars wins over extraEnv, and both over chart-set variables.
+                self.assertEqual(variables['PLAIN']['value'], 'from-vars')
+                self.assertEqual(variables['PORT']['value'], '9999')
+                self.assertEqual(len(c['env']), len(variables))
+                self.assertNotIn('livenessProbe', c)
+                self.assertEqual(c['readinessProbe'], {**ready, 'periodSeconds': 30, 'timeoutSeconds': 3})
+        # Defaults keep the chart's ServiceAccount and the previous probes.
+        docs = render({'tika': {'enabled': True}})
+        pod = find(docs, 'Deployment', 'opencloud-tika')['spec']['template']['spec']
+        self.assertEqual(pod['serviceAccountName'], 'opencloud')
+        self.assertEqual(pod['containers'][0]['startupProbe'], {'httpGet': {'path': '/tika', 'port': 'http'}, 'periodSeconds': 5, 'failureThreshold': 30})
+        self.assertNotIn('env', pod['containers'][0])
+        self.assertNotIn('initContainers', pod)
+        self.assertIn('duplicate variable', render({'tika': {'enabled': True, 'extraEnvVars': [{'name': 'A', 'value': '1'}, {'name': 'A', 'value': '2'}]}}, succeeds=False))
+        render({'yjs': {'livenessProbe': {'enabled': True, 'bogus': 1}}}, succeeds=False)
 
 
 if __name__ == '__main__':

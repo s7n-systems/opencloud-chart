@@ -43,6 +43,16 @@ spec:
       from:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+    {{- if and $np.ingressFrom $.Values.yjs.enabled }}
+    # yjs calls OpenCloud's Service directly, not through the Ingress.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "opencloud.componentSelectorLabels" (dict "component" "yjs" "context" $) | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 9200
+    {{- end }}
     {{- end }}
     {{- if $.Values.metrics.enabled }}
     # /metrics on the debug port.
@@ -53,6 +63,18 @@ spec:
       from:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+    {{- end }}
+    {{- if $.Values.tests.enabled }}
+    # The helm test pod checks the web port and the readiness endpoint.
+    - from:
+        - {{ include "opencloud.testPeer" $ | nindent 10 | trim }}
+      ports:
+        {{- if $proxy }}
+        - protocol: TCP
+          port: 9200
+        {{- end }}
+        - protocol: TCP
+          port: {{ include "opencloud.roleDebugPort" (dict "role" .role "context" $) }}
     {{- end }}
     {{- if $split }}
     # The services call each other directly on the pod addresses, in both

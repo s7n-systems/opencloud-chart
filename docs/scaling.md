@@ -1,6 +1,6 @@
 # Several storage pods (experimental)
 
-`persistence.data.shared` switches the storage pods to one shared `ReadWriteMany` data volume: a single claim, `<fullname>-data` (or `persistence.data.existingClaim`), mounted by every storage pod instead of one claim per pod, and kept on uninstall. `storagePods.replicas` above 1 requires it:
+`persistence.data.shared` switches the storage pods to one shared `ReadWriteMany` data volume: a single claim, `<fullname>-data` (or `persistence.data.existingClaim`), mounted by every storage pod instead of one claim per pod, and kept on uninstall. `storagePods.replicas` above 1 requires it. Add to a `topology: split` configuration that meets the requirements in the [README](../README.md#scaling):
 
 ```yaml
 topology: split
@@ -13,9 +13,10 @@ persistence:
     storageClass: nfs-rwx
 ```
 
-- **File system:** OpenCloud keeps its metadata in extended attributes and coordinates writers with `flock`. Use NFS 4.2 mounted with `noac`, or CephFS. NFS 4.1 and older have no extended attributes.
+- **File system:** OpenCloud keeps its metadata in extended attributes and coordinates writers with `flock`. For NFS use version 4.2 with `noac,lookupcache=none`; NFS 4.1 and older have no extended attributes. `noac` disables attribute caching; `lookupcache=none` separately forces directory-entry revalidation, including previously missing names ([NFS mount options](https://man7.org/linux/man-pages/man5/nfs.5.html)). The shared-storage suite checks immediate directory-link visibility in both directions between nodes, not just existing file contents. CephFS is another candidate; validate your storage with the full suite.
 - **Restarts:** while a storage pod restarts, requests routed to it fail for up to about 30 seconds after the new pod is ready (see the [scaling overview](../README.md#scaling)); the data stays intact.
-- **search, ocm and auth-guest** hold state that only one process may own (the search index, the OCM invitation store, the guest-link tokens), so they run on the first pod, `<fullname>-0`, only. While that pod restarts, search, OCM and guest access are unavailable; file access continues through the other pods.
+- **User and system metadata:** `storage-users` and `storage-system` run on every storage pod, on the same shared metadata volume. Both data URLs resolve through the headless Service, without pinning system metadata to pod 0. Filesystem visibility must be immediate between these processes: a directory created through one pod must be usable by an upload initiated through another. First-login failures have been observed with the earlier `noac`-only test configuration; the stronger mount options and visibility checks still need validation on your storage.
+- **search, ocm and auth-guest** hold state that only one process may own (the search index, OCM invitations, guest-link tokens), so they run on the first pod, `<fullname>-0`, only. While that pod restarts those services are unavailable. This layout does not provide high availability for every service.
 - **Not supported upstream:** OpenCloud's maintainers name shared `ReadWriteMany` storage as the prerequisite for several instances, but there is no published, tested configuration. `tests/e2e/shared/run.sh` checks this setup on NFS; run it against your storage before relying on it.
 - **Scaling:** with shared storage, changing `storagePods.replicas` keeps the same claim, including when scaling down to one pod. Set `shared` before installation if you want this option.
 
@@ -58,7 +59,7 @@ config:
     no_auth_user: healthcheck
 ```
 
-Then point the chart at it, with the `username` and `password` keys in `nats.existingSecret`:
+Then point the chart at it, with the `username` and `password` keys in `nats.existingSecret`. Add to a configuration with `identity.mode: oidc`, an external `identity.ldap.uri` and `serviceSecrets.existingSecret`:
 
 ```yaml
 topology: split

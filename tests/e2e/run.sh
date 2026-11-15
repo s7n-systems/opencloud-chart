@@ -121,6 +121,15 @@ print("ok   every container has a read-only root filesystem")'
 kubectl -n oc exec opencloud-0 -c opencloud -- sh -c '! test -e /etc/opencloud/opencloud.yaml'
 echo "ok   no generated opencloud.yaml"
 checks oc write fresh
+# The chart's helm test hook (templates/tests), against the running release.
+# Successful hooks delete their pods before Helm retrieves --logs.
+if helm test opencloud --namespace oc --timeout 5m; then
+  echo "ok   helm test"
+else
+  status=$?
+  kubectl --namespace oc logs opencloud-test >&2 || true
+  exit "$status"
+fi
 
 step "1b. pod replacement"
 kubectl -n oc delete pod opencloud-0 --wait >/dev/null
