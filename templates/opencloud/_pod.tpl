@@ -19,12 +19,21 @@
 {{- range $extensions }}{{- $images = append $images .image }}{{- end }}
 {{- $podLabels := $ctx.Values.podLabels }}
 {{- $podAnnotations := $ctx.Values.podAnnotations }}
-{{- $scheduling := pick $ctx.Values "nodeSelector" "affinity" "tolerations" "topologySpreadConstraints" }}
+{{- $scheduling := pick $ctx.Values "nodeSelector" "affinity" "tolerations" "topologySpreadConstraints" "priorityClassName" "sidecars" }}
 {{- $resources := $ctx.Values.resources }}
 {{- if $frontend }}
 {{- $podLabels = merge (dict) $ctx.Values.frontend.podLabels $ctx.Values.podLabels }}
 {{- $podAnnotations = merge (dict) $ctx.Values.frontend.podAnnotations $ctx.Values.podAnnotations }}
-{{- $scheduling = pick $ctx.Values.frontend "nodeSelector" "affinity" "tolerations" "topologySpreadConstraints" }}
+{{- $scheduling = pick $ctx.Values.frontend "nodeSelector" "affinity" "tolerations" "topologySpreadConstraints" "priorityClassName" "sidecars" }}
+{{- $preset := $ctx.Values.frontend.podAntiAffinityPreset }}
+{{- if and $preset (not $scheduling.affinity) }}
+{{- $term := dict "labelSelector" (dict "matchLabels" (include "opencloud.componentSelectorLabels" (dict "component" "frontend" "context" $ctx) | fromYaml)) "topologyKey" "kubernetes.io/hostname" }}
+{{- if eq $preset "hard" }}
+{{- $_ := set $scheduling "affinity" (dict "podAntiAffinity" (dict "requiredDuringSchedulingIgnoredDuringExecution" (list $term))) }}
+{{- else }}
+{{- $_ := set $scheduling "affinity" (dict "podAntiAffinity" (dict "preferredDuringSchedulingIgnoredDuringExecution" (list (dict "weight" 100 "podAffinityTerm" $term)))) }}
+{{- end }}
+{{- end }}
 {{- $resources = $ctx.Values.frontend.resources }}
 {{- end }}
   template:
@@ -48,6 +57,9 @@
       {{- if $ctx.Values.podSecurityContext.enabled }}
       securityContext:
         {{- omit $ctx.Values.podSecurityContext "enabled" | toYaml | nindent 8 }}
+      {{- end }}
+      {{- with $scheduling.priorityClassName }}
+      priorityClassName: {{ . | quote }}
       {{- end }}
       {{- with $ctx.Values.hostAliases }}
       hostAliases: {{- toYaml . | nindent 8 }}
@@ -304,6 +316,9 @@
             {{- toYaml $mounts | nindent 12 }}
           resources:
             {{- toYaml $resources | nindent 12 }}
+        {{- with $scheduling.sidecars }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}

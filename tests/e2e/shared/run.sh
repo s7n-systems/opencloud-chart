@@ -20,7 +20,7 @@
 #                      from the kind nodes; default: an NFS server in the cluster,
 #                      which needs the nfsd kernel module on this host
 #                      (sudo modprobe nfsd)
-#   NFS_MOUNT_OPTIONS  default nfsvers=4.2,noac (OpenCloud needs NFS 4.2 for
+#   NFS_MOUNT_OPTIONS  default nfsvers=4.2,noac,lookupcache=none (OpenCloud needs NFS 4.2 for
 #                      extended attributes)
 #   DRIVER             storage driver: decomposed (default; metadata handling as
 #                      decomposeds3, without S3) or posix
@@ -36,12 +36,18 @@ chart="$(cd "$e2e/../.." && pwd)"
 work="$(mktemp -d)"
 cluster="opencloud-shared-$(basename "$work" | tr -cd 'a-z0-9' | tail -c 8)"
 export KUBECONFIG="$work/kubeconfig"
-NFS_MOUNT_OPTIONS="${NFS_MOUNT_OPTIONS:-nfsvers=4.2,noac}"
+NFS_MOUNT_OPTIONS="${NFS_MOUNT_OPTIONS:-nfsvers=4.2,noac,lookupcache=none}"
 DRIVER="${DRIVER:-decomposed}"
 # renovate: datasource=helm depName=csi-driver-nfs registryUrl=https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/charts
 CSI_NFS_VERSION="${CSI_NFS_VERSION:-4.13.6}"
 created=0
 pids=()
+# Use the same engine for kind's nodes and the NFS unmount cleanup.
+container_engine=${KIND_EXPERIMENTAL_PROVIDER:-docker}
+if [ -z "${KIND_EXPERIMENTAL_PROVIDER:-}" ] && ! command -v docker >/dev/null && command -v podman >/dev/null; then
+  container_engine=podman
+fi
+export KIND_EXPERIMENTAL_PROVIDER="$container_engine"
 
 cleanup() {
   for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done
@@ -59,7 +65,7 @@ cleanup() {
     # hangs its processes, and the node container cannot be killed. Lazily
     # force-unmount whatever is left, while the server is still running.
     for node in $(kind get nodes --name "$cluster" 2>/dev/null); do
-      docker exec "$node" sh -c \
+      "$container_engine" exec "$node" sh -c \
         "awk '\$3 ~ /^nfs/ {print \$2}' /proc/mounts | sort -r | xargs -r -n1 umount -f -l" >/dev/null 2>&1 || true
     done
     # The in-cluster server runs the kernel nfsd in the control plane's network
@@ -145,7 +151,7 @@ replace_pod() { # replace_pod NAME: deletes a storage pod and waits for its repl
 settle() { sleep "${REGISTRY_SETTLE:-40}"; }
 
 step "prerequisites"
-for tool in kind kubectl helm python3 curl; do
+for tool in kind kubectl helm python3 curl "$container_engine"; do
   command -v "$tool" >/dev/null || fail "$tool is not installed"
 done
 if [ -z "${NFS_SERVER:-}" ] && ! grep -qw nfsd /proc/filesystems; then
@@ -246,11 +252,20 @@ fi
 if [ "$services1" != "storage-users,storage-system" ]; then
   fail "opencloud-1 should run storage-users,storage-system only"
 fi
-echo "ok   search, ocm and auth-guest on opencloud-0 only"
+echo "ok   user and system storage on both pods; search, ocm and auth-guest on opencloud-0 only"
 settle
 
 with_opencloud python3 "$e2e/check.py" write shared
 with_opencloud python3 "$shared/check_shared.py" write one
+# The chart's helm test hook, here with two storage pods behind the headless Service.
+# Successful hooks delete their pods before Helm retrieves --logs.
+if helm test opencloud --namespace oc --timeout 5m; then
+  echo "ok   helm test"
+else
+  status=$?
+  kubectl --namespace oc logs opencloud-test >&2 || true
+  exit "$status"
+fi
 
 step "3a. replace storage pod opencloud-1"
 replace_pod opencloud-1

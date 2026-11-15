@@ -24,6 +24,10 @@ spec:
         - podSelector:
             matchLabels:
               {{- include "opencloud.proxySelectorLabels" . | nindent 14 }}
+        {{- if .Values.tests.enabled }}
+        # The helm test pod, which only checks that the port answers.
+        - {{ include "opencloud.testPeer" . | nindent 10 | trim }}
+        {{- end }}
       ports:
         - protocol: TCP
           port: 5232

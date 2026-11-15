@@ -36,6 +36,64 @@ app.kubernetes.io/component: {{ .component }}
 {{- include "opencloud.componentSelectorLabels" (dict "component" "server" "context" .) -}}
 {{- end -}}
 
+{{/* Container environment of a companion (yjs, Radicale, Tika) as a YAML
+     list: the chart's entries, then extraEnv, then extraEnvVars. Like the
+     OpenCloud container, an extra entry replaces a chart entry of the same
+     name; extraEnvVars wins over extraEnv. Takes dict "env" (list) and
+     "values" (the companion's values). */}}
+{{- define "opencloud.companionEnv" -}}
+{{- $overrides := .values.extraEnvVars | default list -}}
+{{- $names := list -}}
+{{- range $overrides -}}
+{{- if has .name $names -}}{{- fail (printf "extraEnvVars contains duplicate variable %q" .name) -}}{{- end -}}
+{{- $names = append $names .name -}}
+{{- end -}}
+{{- range $key, $value := .values.extraEnv | default dict -}}
+{{- if not (has $key $names) -}}
+{{- $overrides = append $overrides (dict "name" $key "value" (toString $value)) -}}
+{{- $names = append $names $key -}}
+{{- end -}}
+{{- end -}}
+{{- $env := list -}}
+{{- range .env -}}{{- if not (has .name $names) -}}{{- $env = append $env . -}}{{- end -}}{{- end -}}
+{{- concat $env $overrides | toYaml -}}
+{{- end -}}
+
+{{/* A companion's probe: the chart's handler plus the probe values, without
+     "enabled". Empty when the probe is disabled. */}}
+{{- define "opencloud.companionProbe" -}}
+{{- if .probe.enabled -}}
+{{- merge (deepCopy .handler) (omit .probe "enabled") | toYaml -}}
+{{- end -}}
+{{- end -}}
+
+{{/* https when an Ingress tls entry covers the host, exactly or with a
+     one-label wildcard (*.example.org), else http. */}}
+{{- define "opencloud.ingressScheme" -}}
+{{- $scheme := "http" -}}
+{{- range .tls -}}
+{{- range .hosts -}}
+{{- if or (eq . $.host) (and (hasPrefix "*." .) (hasSuffix (trimPrefix "*" .) $.host) (not (contains "." (trimSuffix (trimPrefix "*" .) $.host)))) -}}
+{{- $scheme = "https" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- $scheme -}}
+{{- end -}}
+
+{{/* The helm test pod: its own name label, so no selector of the chart's
+     workloads matches it; NetworkPolicies admit it by instance and component. */}}
+{{- define "opencloud.testLabels" -}}
+{{- include "common.labels.standard" (dict "customLabels" (dict "app.kubernetes.io/name" (printf "%s-test" (include "opencloud.name" .)) "app.kubernetes.io/component" "test") "context" .) -}}
+{{- end -}}
+
+{{- define "opencloud.testPeer" -}}
+podSelector:
+  matchLabels:
+    app.kubernetes.io/instance: {{ .Release.Name | quote }}
+    app.kubernetes.io/component: test
+{{- end -}}
+
 {{- define "opencloud.annotations" -}}
 {{- merge (.specific | default dict) .context.Values.additionalAnnotations | toYaml -}}
 {{- end -}}

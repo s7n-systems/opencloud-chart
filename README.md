@@ -59,12 +59,12 @@ The chart deploys OpenCloud as a single-process StatefulSet with persistent conf
 | **Exposure** | Ingress or Gateway API HTTPRoute; configurable proxy routes and Content Security Policy |
 | **Security** | Non-root containers, read-only root filesystems, dropped capabilities, no ServiceAccount token and images pinned by digest |
 | **Observability** | Health probes, Prometheus metrics, optional bearer token and ServiceMonitor |
-| **GitOps** | No Helm hooks; existing Secrets for credentials and optional externally managed service secrets |
+| **GitOps** | No Helm hooks apart from the optional `helm test` pod; existing Secrets for credentials and optional externally managed service secrets |
 | **Release tooling** | OCI publishing to GHCR, cosign signing and Renovate configuration |
 
 ## Requirements
 
-- A Kubernetes cluster and Helm; CI uses Helm 4.
+- Kubernetes 1.27 or later (`kubeVersion` in `Chart.yaml`) and Helm; CI uses Helm 4. Native sidecars (`extraInitContainers` with `restartPolicy: Always`) need Kubernetes 1.29 or later.
 - Persistent storage for configuration and data, or existing claims.
 - A public hostname with DNS, HTTPS termination and a certificate trusted by browsers and OpenCloud. The hostname must also resolve and be reachable from inside the cluster.
 - External services for the integrations you enable: OIDC/LDAP, S3, SMTP, an office server or an antivirus scanner.
@@ -102,7 +102,7 @@ ingress:
 helm install opencloud . --namespace opencloud -f my-values.yaml
 ```
 
-Bitnami Common is vendored in `charts/`, so a checkout needs no dependency download. To install a published version, replace `.` with `oci://ghcr.io/s7n-systems/charts/opencloud` and add `--version 0.6.0`.
+Bitnami Common is vendored in `charts/`, so a checkout needs no dependency download. To install a published version, replace `.` with `oci://ghcr.io/s7n-systems/charts/opencloud` and add `--version 0.7.0`.
 
 The chart validates required settings and credential references during rendering. It cannot verify that Secrets exist, storage can be provisioned or external services are reachable. For an example with Keycloak, S3, SMTP and Collabora, see [examples/keycloak-s3.yaml](examples/keycloak-s3.yaml).
 
@@ -111,7 +111,7 @@ The chart validates required settings and credential references during rendering
 The release workflow signs published chart digests with cosign 3, which stores the signature as an OCI referrer in the new bundle format; verify with cosign 3 or newer (cosign 2 reports "no signatures found"):
 
 ```sh
-cosign verify ghcr.io/s7n-systems/charts/opencloud:0.6.0 \
+cosign verify ghcr.io/s7n-systems/charts/opencloud:0.7.0 \
   --certificate-identity-regexp '^https://github\.com/s7n-systems/opencloud-chart/\.github/workflows/release\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
@@ -224,12 +224,14 @@ Whatever the driver, `/var/lib/opencloud` holds local service state, including N
 | | `single` (default) | `split` |
 | --- | --- | --- |
 | Pods | One StatefulSet pod runs every service, with NATS inside | The StatefulSet runs the storage services; the `<fullname>-frontend` Deployment runs everything else |
-| Scaling | None | Frontend: `frontend.replicas`, or `frontend.autoscaling` with a HorizontalPodAutoscaler on CPU. Storage: one pod, or several on a shared `ReadWriteMany` volume ([experimental](docs/scaling.md#several-storage-pods-experimental)) |
+| Scaling | None | Frontend: `frontend.replicas`, or `frontend.autoscaling` with a HorizontalPodAutoscaler on CPU, memory or custom metrics. Storage: one pod, or several on a shared `ReadWriteMany` volume ([experimental](docs/scaling.md#several-storage-pods-experimental)) |
 | Requires | Nothing extra | `identity.mode: oidc` with an external `identity.ldap.uri`, `serviceSecrets.existingSecret`, and an external NATS cluster in `nats.address` |
 
 In `split`, the StatefulSet runs `storage-users`, `storage-system`, `search` and `ocm`. It defaults to one replica on a `ReadWriteOnce` volume. Every file request passes through storage, including S3 transfers; size its top-level `resources` accordingly.
 
-Frontend pods run the remaining services, including the proxy, web UI and thumbnails. They use temporary config and cache volumes, with separate `frontend.resources` and scheduling settings. With multiple frontend replicas, the PodDisruptionBudget uses `frontend.podDisruptionBudget.minAvailable`.
+Frontend pods run the remaining services, including the proxy, web UI and thumbnails. They use temporary config and cache volumes, with separate `frontend.resources` and scheduling settings. With multiple frontend replicas, the PodDisruptionBudget uses `frontend.podDisruptionBudget.minAvailable`. `frontend.podAntiAffinityPreset: soft` (or `hard`) spreads them across nodes when `frontend.affinity` is empty; `frontend.topologySpreadConstraints` spreads them across zones.
+
+`frontend.autoscaling` scales on CPU (`targetCPUUtilizationPercentage`, default 80) and optionally memory (`targetMemoryUtilizationPercentage`), each in percent of the containers' requests. `metrics` replaces both with raw autoscaling/v2 entries, for example custom or external metrics, and `behavior` sets the scaling behavior; by default, pods are removed one per minute after ten minutes of lower load. The HPA computes utilization over every container in the pod: if one lacks the request, it cannot compute it and does not scale. The chart therefore requires the request on the frontend container, on every `frontend.sidecars` entry and on every native sidecar (an `extraInitContainers` entry with `restartPolicy: Always`, which needs Kubernetes 1.29 or later).
 
 **The storage pod is a single point of failure for file access.** While it restarts, the frontends keep serving the web UI, but file operations fail. After a node failure, Kubernetes must detach the `ReadWriteOnce` volume before the replacement pod starts, which can take several minutes.
 
@@ -278,11 +280,13 @@ These settings govern passwords, not whether public links may be created. The ch
 | `web.theme` | A custom theme for the web UI: name, logos, colours and links. See [Theme](#theme). |
 | `csp.extraDirectives` | Additional Content Security Policy sources, for example for web extensions that embed other sites. |
 
+Radicale is disabled by default (`radicale.enabled: false`): the chart deploys no Radicale resources or DAV proxy routes, and OpenCloud does not advertise its calendar/contact endpoints. Keep it disabled when another service provides calendars and contacts. The chart does not migrate existing Radicale calendars and contacts elsewhere.
+
 ### Web extensions
 
 `web.extensions` installs web apps from images. Each image holds its app in `/web/apps/<name>`. The upstream images from [opencloud-eu/web-extensions](https://github.com/opencloud-eu/web-extensions) use this layout: `opencloudeu/web-extensions:<name>-<version>`.
 
-No apps are installed by default. A good start are `unzip` and `json-viewer`. Both run in the browser and need no external services:
+No apps are installed by default. A good start are `unzip` and `json-viewer`. Both run in the browser and need no external services. Add to your values:
 
 ```yaml
 web:
@@ -315,7 +319,7 @@ With `web.extensions` set, `WEB_ASSET_APPS_PATH` points to the chart's directory
 
 ### Theme
 
-`web.theme` adds a custom theme for the web UI: product name, logos, favicon, colours and links to imprint and privacy pages. OpenCloud serves it next to its built-in theme, which stays available.
+`web.theme` adds a custom theme for the web UI: product name, logos, favicon, colours and links to imprint and privacy pages. OpenCloud serves it next to its built-in theme, which stays available. Add to your values:
 
 ```yaml
 web:
@@ -364,10 +368,12 @@ Radicale trusts the proxy's `X-Remote-User` header. When enabled, a NetworkPolic
 | 9200 (web) | `networkPolicy.ingressFrom`, e.g. the Ingress controller's namespace; any source when empty |
 | Debug port with `/metrics` (with `metrics.enabled`) | `networkPolicy.metricsFrom`; any source when empty |
 | Internal service ports (`topology: split`) | this release's OpenCloud pods only |
+| yjs, port 1234 | the OpenCloud proxy pods |
+| Tika, port 9998 | this release's OpenCloud pods, which run the search service |
 
-Health probes come from the node and stay allowed. Enable the policies with `topology: split`: there, about 40 internal service ports otherwise accept connections from any pod in the cluster. Outbound traffic is not restricted. Companions that reach OpenCloud through `hostAliases` pointing at the Service instead of the Ingress, such as yjs or an office server, must be listed in `ingressFrom`. For the external NATS, see [docs/scaling.md](docs/scaling.md#nats).
+Health probes come from the node and stay allowed. Enable the policies with `topology: split`: there, about 40 internal service ports otherwise accept connections from any pod in the cluster. Outbound traffic is not restricted. yjs calls OpenCloud's Service directly and is admitted to port 9200 automatically. Other companions that reach OpenCloud through `hostAliases` pointing at the Service instead of the Ingress, such as an office server, must be listed in `ingressFrom`. For the external NATS, see [docs/scaling.md](docs/scaling.md#nats).
 
-Restrict the companions (yjs, Tika) with your own NetworkPolicies.
+With `tests.enabled`, all these policies, and Radicale's, also admit the `helm test` pod (labels `app.kubernetes.io/instance: <release>` and `app.kubernetes.io/component: test`) to the ports it checks.
 
 ## Operations
 
@@ -375,9 +381,12 @@ See [Upgrading](docs/upgrading.md) before changing values or storage topology.
 
 - **Backups:** back up config and data volumes together, plus the S3 bucket when using `decomposeds3` and the Radicale volume when enabled. Stop services or use a consistent snapshot, and test restoration.
 - **Secrets:** restart the affected pods after changing an externally managed Secret used as environment variables. Keep internal service secrets and IDs stable.
-- **Persistence:** check PVC retention before uninstalling. With `persistence.data.shared`, the data claim `<fullname>-data` is kept on uninstall (`helm.sh/resource-policy: keep`) and must be deleted by hand. Resource and claim names depend on the release name and `fullnameOverride`.
+- **Persistence:** check PVC retention before uninstalling. `persistence.retentionPolicy` and `radicale.persistence.retentionPolicy` set whether claims created by the StatefulSets are kept or deleted when the StatefulSet is deleted or scaled down; claims given as `existingClaim` are never touched, and the shared data claim follows the rule below. With `persistence.data.shared`, the data claim `<fullname>-data` is kept on uninstall (`helm.sh/resource-policy: keep`) and must be deleted by hand. Resource and claim names depend on the release name and `fullnameOverride`.
 - **Resources:** OpenCloud requests 250m CPU and 512Mi memory by default and sets no limits, since a CPU limit throttles uploads and thumbnail generation. Tune requests from measured load; the startup probe allows five minutes. **After some time in production**, set a memory limit from the observed peak usage (`resources.limits.memory`, and `frontend.resources` in `topology: split`), so a runaway process cannot exhaust the node.
-- **GitOps:** the chart has no hooks. Install any required Gateway API or ServiceMonitor CRDs before applying its rendered resources.
+- **Checks:** `helm test <release>` starts a pod that checks the web port (`/status.php`), in `topology: split` the readiness of each storage pod, and yjs, Tika and Radicale when the chart deploys them. It uses the OpenCloud image and is removed after a successful run; a failed one stays for its logs until the next run. Installs and syncs never run it: only `helm test` and `helmfile test` do, and Argo CD skips test hooks. `tests.enabled: false` removes it. Storage pods are checked one by one; the other components through their Service, so such a check passes when one ready pod answers, and the readiness probes cover each pod.
+- **Sidecars and extra containers:** `sidecars`, `frontend.sidecars`, the companions' `sidecars` and every `extraInitContainers` entry are added as written. They must meet the same pod security settings as the chart's containers (non-root, read-only root filesystem, no privilege escalation, all capabilities dropped, resource requests) to pass the [Kyverno policies](policies/kyverno) and restricted Pod Security admission. With frontend autoscaling, they also need the requests the HPA scales on, as described in [Scaling](#scaling).
+- **Companions:** yjs, Radicale and Tika take `extraEnv` and `extraEnvVars` (full entries, e.g. `valueFrom.secretKeyRef`), `extraVolumes`, `extraVolumeMounts` and `extraInitContainers` (for example for custom CA certificates), configurable `livenessProbe`, `readinessProbe` (and Tika's `startupProbe`), and `serviceAccountName` for a ServiceAccount of their own.
+- **GitOps:** apart from the `helm test` pod, the chart has no hooks. Install any required Gateway API or ServiceMonitor CRDs before applying its rendered resources.
 
 ### Before production
 
@@ -408,6 +417,8 @@ This README is generated from `README.md.gotmpl` and the `# --` comments in `val
 ### Release
 
 Bitnami Common is vendored in `charts/`. Keep `Chart.yaml`, `Chart.lock` and the dependency archive in sync; `helm dependency build .` restores the locked dependency.
+
+Before a release, update `artifacthub.io/changes` in `Chart.yaml` with the release's changes (kinds: added, changed, deprecated, removed, fixed, security) and set `artifacthub.io/containsSecurityUpdates` accordingly. Renovate keeps `artifacthub.io/images` in step with the image pins in `values.yaml`, and a render test checks that they match.
 
 Push a `vX.Y.Z` tag matching `version` in `Chart.yaml` to run CI, package the chart, publish it to `oci://ghcr.io/s7n-systems/charts/opencloud`, sign its digest with cosign and create a GitHub release with the packaged chart and generated notes. Forks publish under their repository owner's GHCR namespace.
 
@@ -466,20 +477,25 @@ Push a `vX.Y.Z` tag matching `version` in `Chart.yaml` to run CI, package the ch
 | extraSecretEnv | object | `{}` | Extra environment variables from the chart-managed Secret. |
 | extraVolumeMounts | list | `[]` |  |
 | extraVolumes | list | `[]` |  |
-| frontend.affinity | object | `{}` |  |
-| frontend.autoscaling.enabled | bool | `false` | Scales the frontend with a HorizontalPodAutoscaler on CPU use instead of frontend.replicas. Requires the metrics API, e.g. metrics-server. |
+| frontend.affinity | object | `{}` | Explicit affinity always wins over podAntiAffinityPreset below. |
+| frontend.autoscaling.behavior | object | `{"scaleDown":{"policies":[{"periodSeconds":60,"type":"Pods","value":1}],"stabilizationWindowSeconds":600}}` | autoscaling/v2 behavior. By default, pods are removed one per minute after ten minutes of lower load. Set to null for the Kubernetes defaults. |
+| frontend.autoscaling.enabled | bool | `false` | Scales the frontend with a HorizontalPodAutoscaler instead of frontend.replicas. Requires the metrics API, e.g. metrics-server. |
 | frontend.autoscaling.maxReplicas | int | `10` |  |
+| frontend.autoscaling.metrics | list | `[]` | Advanced: raw autoscaling/v2 metric entries, used instead of the two targets above when non-empty, e.g. custom or external metrics. |
 | frontend.autoscaling.minReplicas | int | `2` |  |
-| frontend.autoscaling.scaleDownStabilizationWindowSeconds | int | `600` | Seconds the CPU use must stay below the target before pods are removed. |
-| frontend.autoscaling.targetCPUUtilizationPercentage | int | `80` | Average CPU use, in percent of frontend.resources.requests.cpu, above which pods are added. |
+| frontend.autoscaling.targetCPUUtilizationPercentage | int | `80` | Average CPU use, in percent of the CPU requests, above which pods are added. Empty disables this target. Every frontend container, sidecars included, needs resources.requests.cpu: the HPA cannot compute utilization if one lacks it. |
+| frontend.autoscaling.targetMemoryUtilizationPercentage | string | `""` | Average memory use, in percent of the memory requests. Empty disables this target; as for CPU, every container needs a memory request. |
 | frontend.nodeSelector | object | `{}` |  |
 | frontend.podAnnotations | object | `{}` |  |
+| frontend.podAntiAffinityPreset | string | `""` | Spreads the frontend pods across nodes when affinity is left empty: "", "soft" (preferred) or "hard" (required: surplus pods stay pending rather than share a node). |
 | frontend.podDisruptionBudget.enabled | bool | `true` | Keeps minAvailable frontend pods running during voluntary disruptions such as node drains. Rendered only with more than one replica. |
 | frontend.podDisruptionBudget.minAvailable | int | `1` |  |
 | frontend.podLabels | object | `{}` |  |
+| frontend.priorityClassName | string | `""` | PriorityClass for the frontend pods. |
 | frontend.replicas | int | `2` | Number of frontend pods while autoscaling is disabled. |
 | frontend.resources.requests.cpu | string | `"250m"` |  |
 | frontend.resources.requests.memory | string | `"512Mi"` |  |
+| frontend.sidecars | list | `[]` | Extra containers in the frontend pods, as written. |
 | frontend.tolerations | list | `[]` |  |
 | frontend.topologySpreadConstraints | list | `[]` |  |
 | fullnameOverride | string | `""` | Overrides the full resource name used by the chart. |
@@ -587,6 +603,7 @@ Push a `vX.Y.Z` tag matching `version` in `Chart.yaml` to run CI, package the ch
 | persistence.data.size | string | `"50Gi"` |  |
 | persistence.data.storageClass | string | `""` |  |
 | persistence.enabled | bool | `true` |  |
+| persistence.retentionPolicy | object | `{}` | StatefulSet persistentVolumeClaimRetentionPolicy: whenDeleted and whenScaled, each Retain or Delete. Empty keeps Kubernetes' default, Retain for both. Applies only to claims the StatefulSet creates from its templates: not to existingClaim, nor to the standalone claim of persistence.data.shared, which Helm keeps on uninstall. |
 | podAnnotations | object | `{}` |  |
 | podLabels | object | `{}` |  |
 | podSecurityContext.enabled | bool | `true` |  |
@@ -596,6 +613,7 @@ Push a `vX.Y.Z` tag matching `version` in `Chart.yaml` to run CI, package the ch
 | podSecurityContext.runAsNonRoot | bool | `true` |  |
 | podSecurityContext.runAsUser | int | `1000` |  |
 | podSecurityContext.seccompProfile.type | string | `"RuntimeDefault"` |  |
+| priorityClassName | string | `""` | PriorityClass for the OpenCloud pods (the storage pods in topology split), e.g. so they are scheduled before less important workloads. |
 | proxy.additionalRoutes | list | `[]` | Extra routes appended to the proxy's default policy (proxy.yaml additional_policies), e.g. [{endpoint: /app/, backend: "http://app:8080", unprotected: true}]. |
 | radicale.affinity | object | `{}` |  |
 | radicale.config | string | `""` | Replaces the generated Radicale configuration file entirely when set. Keep `[auth] type = http_x_remote_user`: the proxy passes the user in X-Remote-User. |
@@ -605,17 +623,26 @@ Push a `vX.Y.Z` tag matching `version` in `Chart.yaml` to run CI, package the ch
 | radicale.containerSecurityContext.privileged | bool | `false` |  |
 | radicale.containerSecurityContext.readOnlyRootFilesystem | bool | `true` |  |
 | radicale.containerSecurityContext.runAsNonRoot | bool | `true` |  |
-| radicale.enabled | bool | `false` |  |
+| radicale.enabled | bool | `false` | Deploy Radicale and advertise its CalDAV/CardDAV endpoints. Leave disabled when another service provides calendars and contacts. |
+| radicale.extraEnv | object | `{}` | Extra environment variables as plain name/value pairs; they replace chart-set variables of the same name. |
+| radicale.extraEnvVars | list | `[]` | Extra environment variables as full Kubernetes `env` entries (e.g. valueFrom.secretKeyRef); they take precedence over extraEnv. |
+| radicale.extraInitContainers | list | `[]` | Extra init containers in the radicale pod. |
+| radicale.extraVolumeMounts | list | `[]` |  |
+| radicale.extraVolumes | list | `[]` |  |
 | radicale.image.digest | string | pinned, see values.yaml | Multi-arch index digest of the tag. Takes precedence over the tag; clear it to float on the tag instead. |
 | radicale.image.pullPolicy | string | `"IfNotPresent"` |  |
 | radicale.image.pullSecrets | list | `[]` |  |
 | radicale.image.registry | string | `"docker.io"` |  |
 | radicale.image.repository | string | `"opencloudeu/radicale"` |  |
 | radicale.image.tag | string | pinned, see values.yaml | Image tag, kept in sync with the digest by Renovate. |
+| radicale.livenessProbe.enabled | bool | `true` |  |
+| radicale.livenessProbe.periodSeconds | int | `15` |  |
+| radicale.livenessProbe.timeoutSeconds | int | `5` |  |
 | radicale.nodeSelector | object | `{}` |  |
 | radicale.persistence.accessMode | string | `"ReadWriteOnce"` |  |
 | radicale.persistence.enabled | bool | `true` |  |
 | radicale.persistence.existingClaim | string | `""` |  |
+| radicale.persistence.retentionPolicy | object | `{}` | StatefulSet persistentVolumeClaimRetentionPolicy, as for the top-level persistence.retentionPolicy. Not applied to existingClaim. |
 | radicale.persistence.size | string | `"5Gi"` |  |
 | radicale.persistence.storageClass | string | `""` |  |
 | radicale.podAnnotations | object | `{}` |  |
@@ -627,8 +654,14 @@ Push a `vX.Y.Z` tag matching `version` in `Chart.yaml` to run CI, package the ch
 | radicale.podSecurityContext.runAsNonRoot | bool | `true` |  |
 | radicale.podSecurityContext.runAsUser | int | `1000` |  |
 | radicale.podSecurityContext.seccompProfile.type | string | `"RuntimeDefault"` |  |
+| radicale.priorityClassName | string | `""` | PriorityClass for the radicale pod. |
+| radicale.readinessProbe.enabled | bool | `true` |  |
+| radicale.readinessProbe.periodSeconds | int | `10` |  |
+| radicale.readinessProbe.timeoutSeconds | int | `5` |  |
 | radicale.resources.requests.cpu | string | `"50m"` |  |
 | radicale.resources.requests.memory | string | `"64Mi"` |  |
+| radicale.serviceAccountName | string | `""` | ServiceAccount of the radicale pod; empty uses the chart's. |
+| radicale.sidecars | list | `[]` | Extra containers in the radicale pod, as written. |
 | radicale.tolerations | list | `[]` |  |
 | readinessProbe.enabled | bool | `true` |  |
 | readinessProbe.failureThreshold | int | `3` |  |
@@ -640,6 +673,7 @@ Push a `vX.Y.Z` tag matching `version` in `Chart.yaml` to run CI, package the ch
 | service.annotations | object | `{}` |  |
 | service.ipFamilies | list | `[]` |  |
 | service.ipFamilyPolicy | string | `""` | SingleStack, PreferDualStack or RequireDualStack. Empty keeps the cluster default. |
+| service.loadBalancerClass | string | `""` | Load balancer implementation (spec.loadBalancerClass), e.g. service.k8s.aws/nlb. Rendered only with type LoadBalancer. |
 | service.port | int | `9200` |  |
 | service.type | string | `"ClusterIP"` |  |
 | serviceAccount.annotations | object | `{}` |  |
@@ -651,6 +685,7 @@ Push a `vX.Y.Z` tag matching `version` in `Chart.yaml` to run CI, package the ch
 | sharing.guestLinks | bool | `false` | Share with people who have no account, by email (OC_ENABLE_GUEST_LINKS). Guests get their link and PIN by email, so this requires smtp.enabled. |
 | sharing.publicShareMustHavePassword | bool | `true` | OC_SHARING_PUBLIC_SHARE_MUST_HAVE_PASSWORD. |
 | sharing.publicWriteableShareMustHavePassword | bool | `false` | OC_SHARING_PUBLIC_WRITEABLE_SHARE_MUST_HAVE_PASSWORD. |
+| sidecars | list | `[]` | Extra containers in the OpenCloud pod (the storage pods in topology split), as written (e.g. a log shipper). For sidecars that must start first, use extraInitContainers with restartPolicy: Always (Kubernetes 1.29+). |
 | smtp.authentication | string | `"auto"` | login, plain, crammd5, none or auto. |
 | smtp.enabled | bool | `false` |  |
 | smtp.encryption | string | `"starttls"` | starttls, ssltls or none. |
@@ -677,8 +712,11 @@ Push a `vX.Y.Z` tag matching `version` in `Chart.yaml` to run CI, package the ch
 | storage.s3.region | string | `"default"` |  |
 | storage.s3.secretKey | string | `""` |  |
 | storage.s3.secretKeySecretKey | string | `"secretKey"` |  |
-| storagePods.replicas | int | `1` | Number of storage pods. EXPERIMENTAL above 1, which requires persistence.data.shared: the pods share one ReadWriteMany data volume on a file system with flock and extended attributes, e.g. NFS 4.2 mounted with noac, or CephFS. search, ocm and auth-guest keep state that only one process may hold and run on the first pod only. See docs/scaling.md. |
+| storagePods.replicas | int | `1` | Number of storage pods. EXPERIMENTAL above 1, which requires persistence.data.shared: the pods share one ReadWriteMany data volume on a file system with flock and extended attributes, e.g. NFS 4.2 mounted with noac,lookupcache=none, or CephFS. User and system storage run on every pod; search, ocm and auth-guest run on the first pod only. See docs/scaling.md. |
 | terminationGracePeriodSeconds | int | `60` | Seconds OpenCloud gets to shut down and flush NATS and the search index. |
+| tests.enabled | bool | `true` |  |
+| tests.resources.requests.cpu | string | `"10m"` |  |
+| tests.resources.requests.memory | string | `"32Mi"` |  |
 | tika.affinity | object | `{}` |  |
 | tika.containerSecurityContext.allowPrivilegeEscalation | bool | `false` |  |
 | tika.containerSecurityContext.capabilities.drop[0] | string | `"ALL"` |  |
@@ -688,12 +726,20 @@ Push a `vX.Y.Z` tag matching `version` in `Chart.yaml` to run CI, package the ch
 | tika.containerSecurityContext.runAsNonRoot | bool | `true` |  |
 | tika.enabled | bool | `false` |  |
 | tika.externalUrl | string | `""` | Existing Tika server, e.g. http://tika.search.svc.cluster.local:9998. Used instead of the bundled deployment. |
+| tika.extraEnv | object | `{}` | Extra environment variables as plain name/value pairs; they replace chart-set variables of the same name. |
+| tika.extraEnvVars | list | `[]` | Extra environment variables as full Kubernetes `env` entries (e.g. valueFrom.secretKeyRef); they take precedence over extraEnv. |
+| tika.extraInitContainers | list | `[]` | Extra init containers in the tika pod. |
+| tika.extraVolumeMounts | list | `[]` |  |
+| tika.extraVolumes | list | `[]` |  |
 | tika.image.digest | string | pinned, see values.yaml | Multi-arch index digest of the tag. Takes precedence over the tag; clear it to float on the tag instead. |
 | tika.image.pullPolicy | string | `"IfNotPresent"` |  |
 | tika.image.pullSecrets | list | `[]` |  |
 | tika.image.registry | string | `"docker.io"` |  |
 | tika.image.repository | string | `"apache/tika"` |  |
 | tika.image.tag | string | pinned, see values.yaml | Image tag, kept in sync with the digest by Renovate. |
+| tika.livenessProbe.enabled | bool | `true` |  |
+| tika.livenessProbe.periodSeconds | int | `15` |  |
+| tika.livenessProbe.timeoutSeconds | int | `5` |  |
 | tika.nodeSelector | object | `{}` |  |
 | tika.podAnnotations | object | `{}` |  |
 | tika.podLabels | object | `{}` |  |
@@ -702,8 +748,17 @@ Push a `vX.Y.Z` tag matching `version` in `Chart.yaml` to run CI, package the ch
 | tika.podSecurityContext.runAsNonRoot | bool | `true` |  |
 | tika.podSecurityContext.runAsUser | int | `35002` |  |
 | tika.podSecurityContext.seccompProfile.type | string | `"RuntimeDefault"` |  |
+| tika.priorityClassName | string | `""` | PriorityClass for the tika pod. |
+| tika.readinessProbe.enabled | bool | `true` |  |
+| tika.readinessProbe.periodSeconds | int | `10` |  |
+| tika.readinessProbe.timeoutSeconds | int | `5` |  |
 | tika.resources.requests.cpu | string | `"100m"` |  |
 | tika.resources.requests.memory | string | `"512Mi"` |  |
+| tika.serviceAccountName | string | `""` | ServiceAccount of the tika pod; empty uses the chart's. |
+| tika.sidecars | list | `[]` | Extra containers in the tika pod, as written. |
+| tika.startupProbe.enabled | bool | `true` |  |
+| tika.startupProbe.failureThreshold | int | `30` |  |
+| tika.startupProbe.periodSeconds | int | `5` |  |
 | tika.tolerations | list | `[]` |  |
 | tolerations | list | `[]` |  |
 | topology | string | `"single"` | single runs every OpenCloud service in one pod. split runs the services that keep state on the data volume (storage-users, storage-system, search, ocm) in the StatefulSet, which stays at one replica, and every other service in the scalable frontend Deployment. split requires identity.mode oidc with an external identity.ldap.uri, serviceSecrets.existingSecret and nats.address. Switching an installation from single to split keeps its data volume when the persistence layout is unchanged; see docs/upgrading.md. |
@@ -722,12 +777,19 @@ Push a `vX.Y.Z` tag matching `version` in `Chart.yaml` to run CI, package the ch
 | yjs.containerSecurityContext.runAsNonRoot | bool | `true` |  |
 | yjs.enabled | bool | `true` |  |
 | yjs.extraEnv | object | `{}` |  |
+| yjs.extraEnvVars | list | `[]` | Extra environment variables as full Kubernetes `env` entries (e.g. valueFrom.secretKeyRef); they take precedence over extraEnv. |
+| yjs.extraInitContainers | list | `[]` | Extra init containers in the yjs pod. |
+| yjs.extraVolumeMounts | list | `[]` |  |
+| yjs.extraVolumes | list | `[]` |  |
 | yjs.image.digest | string | pinned, see values.yaml | Multi-arch index digest of the tag. Takes precedence over the tag; clear it to float on the tag instead. |
 | yjs.image.pullPolicy | string | `"IfNotPresent"` |  |
 | yjs.image.pullSecrets | list | `[]` |  |
 | yjs.image.registry | string | `"docker.io"` |  |
 | yjs.image.repository | string | `"opencloudeu/yjs"` |  |
 | yjs.image.tag | string | pinned, see values.yaml | Image tag, kept in sync with the digest by Renovate. |
+| yjs.livenessProbe.enabled | bool | `true` |  |
+| yjs.livenessProbe.periodSeconds | int | `15` |  |
+| yjs.livenessProbe.timeoutSeconds | int | `5` |  |
 | yjs.nodeSelector | object | `{}` |  |
 | yjs.podAnnotations | object | `{}` |  |
 | yjs.podLabels | object | `{}` |  |
@@ -736,9 +798,15 @@ Push a `vX.Y.Z` tag matching `version` in `Chart.yaml` to run CI, package the ch
 | yjs.podSecurityContext.runAsNonRoot | bool | `true` |  |
 | yjs.podSecurityContext.runAsUser | int | `1000` |  |
 | yjs.podSecurityContext.seccompProfile.type | string | `"RuntimeDefault"` |  |
+| yjs.priorityClassName | string | `""` | PriorityClass for the yjs pod. |
+| yjs.readinessProbe.enabled | bool | `true` |  |
+| yjs.readinessProbe.periodSeconds | int | `10` |  |
+| yjs.readinessProbe.timeoutSeconds | int | `5` |  |
 | yjs.resources.requests.cpu | string | `"50m"` |  |
 | yjs.resources.requests.memory | string | `"128Mi"` |  |
+| yjs.serviceAccountName | string | `""` | ServiceAccount of the yjs pod; empty uses the chart's. |
 | yjs.shutdownGracePeriodMs | int | `15000` | Milliseconds the server gets to flush documents on shutdown; keep it below terminationGracePeriodSeconds. |
+| yjs.sidecars | list | `[]` | Extra containers in the yjs pod, as written. |
 | yjs.terminationGracePeriodSeconds | int | `20` |  |
 | yjs.tolerations | list | `[]` |  |
 

@@ -10,6 +10,11 @@ rendered="${1:-$chart/rendered}"
 
 KYVERNO=ghcr.io/kyverno/kyverno-cli:v1.20.0@sha256:bd2b8b7c9d550ecf04e0bacaf351adce2f82ce67fd3f291075edcee7f8ab4ab4
 KUBECONFORM=ghcr.io/yannh/kubeconform:v0.8.0@sha256:faffaf43f95aa6425306e1ab8d6fcad72acb9049158f38e574c085ea1ec0f64e
+# Schemas of the custom resources the chart renders (HTTPRoute, ServiceMonitor),
+# from the community catalog at a pinned commit. A kind without a schema fails.
+CRD_SCHEMAS_REF=89c736bdde38b5fecd0f8436ec5f3aa3679a3b86
+# The oldest Kubernetes version Chart.yaml declares (kubeVersion), and a current one.
+KUBERNETES_VERSIONS=(1.27.0 1.37.0)
 
 kyverno() {
   docker run --rm -v "$chart/policies/kyverno:/policies:ro" -v "$chart/tests/policy:/tests:ro" \
@@ -36,8 +41,13 @@ else
 fi
 
 mapfile -t files < <(basename -a "$rendered"/*.yaml)
-docker run --rm -v "$(realpath "$rendered"):/rendered:ro" "$KUBECONFORM" \
-  -strict -summary -ignore-missing-schemas -kubernetes-version 1.37.0 \
-  "${files[@]/#//rendered/}" || status=1
+for version in "${KUBERNETES_VERSIONS[@]}"; do
+  echo "schemas: Kubernetes $version"
+  docker run --rm -v "$(realpath "$rendered"):/rendered:ro" "$KUBECONFORM" \
+    -strict -summary -kubernetes-version "$version" \
+    -schema-location default \
+    -schema-location "https://raw.githubusercontent.com/datreeio/CRDs-catalog/$CRD_SCHEMAS_REF/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json" \
+    "${files[@]/#//rendered/}" || status=1
+done
 
 exit "$status"

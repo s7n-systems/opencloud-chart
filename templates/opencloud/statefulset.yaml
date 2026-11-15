@@ -17,6 +17,9 @@ spec:
   # topology split runs the storage services here, which keep the files on
   # the data volume. Either way, the volume allows exactly one replica.
   replicas: {{ include "opencloud.storageReplicas" . }}
+  {{- with .Values.persistence.retentionPolicy }}
+  persistentVolumeClaimRetentionPolicy: {{- toYaml . | nindent 4 }}
+  {{- end }}
   serviceName: {{ $fullname }}-headless
   podManagementPolicy: OrderedReady
   updateStrategy:

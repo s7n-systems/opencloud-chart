@@ -2,6 +2,19 @@
 
 Before an upgrade, back up config and data volumes, external service secrets and any S3 data. Test restoration. Review upstream application release notes as well as chart changes.
 
+## Chart 0.7.0: helm test, NOTES and scheduling options
+
+- **Radicale:** `radicale.enabled` now also controls whether OpenCloud advertises its CalDAV/CardDAV endpoints. It remains disabled by default, and the Keycloak/S3 example leaves it disabled too. Enable it explicitly if you use Radicale.
+- **Shared NFS tests:** the default mount options now include `lookupcache=none` alongside `noac`, and the filesystem probe checks immediate directory-link visibility in both directions between nodes. User and system storage both run on every storage pod. Re-run the shared-storage suite against your own storage.
+- **New:** `helm test` checks that OpenCloud and its companions answer. See Operations in the [README](../README.md#operations). `tests.enabled: false` removes the test pod.
+- **New:** installs and upgrades print the public URL, the first sign-in and warnings for risky settings.
+- **New:** `priorityClassName` and `sidecars` for OpenCloud, the frontend, yjs, Radicale and Tika; `persistence.retentionPolicy` and `radicale.persistence.retentionPolicy`; `service.loadBalancerClass`. Without them nothing changes.
+- **NetworkPolicies:** with `tests.enabled` (the default), the chart's NetworkPolicies also admit the test pod to the ports it checks. `networkPolicy.enabled` now also adds policies for yjs and Tika, and admits yjs to OpenCloud's port 9200, which a restricted `networkPolicy.ingressFrom` blocked before.
+- **Renamed:** `frontend.autoscaling.scaleDownStabilizationWindowSeconds` is replaced by `frontend.autoscaling.behavior`, whose default keeps the previous behavior. Move a custom value to `behavior.scaleDown.stabilizationWindowSeconds`; the old key fails the schema.
+- **Autoscaling:** `targetMemoryUtilizationPercentage`, `metrics` and `behavior`. With CPU or memory targets, every frontend container, including sidecars and native sidecars, needs the matching resource request, or rendering fails.
+- **New:** `frontend.podAntiAffinityPreset`; for yjs, Radicale and Tika `extraEnv`, `extraEnvVars`, `extraVolumes`, `extraVolumeMounts`, `extraInitContainers`, configurable probes and `serviceAccountName`.
+- **Images:** Radicale v3.9.0 pinned to a newer build of the same version.
+
 ## Chart 0.6.0: themes
 
 - **New:** `web.theme` adds a custom theme for the web UI from values. See [Theme](../README.md#theme). Without it nothing changes.
@@ -41,7 +54,7 @@ These names changed; no compatibility aliases are provided before chart 1.0:
 | `storage.s3.accessKey` | `storage.s3.accessKeyId` |
 | `storage.s3.accessKeySecretKey` | `storage.s3.accessKeyIdSecretKey` |
 
-The default key read from an existing Secret also changed from `accessKey` to `accessKeyId`. Rename that Secret key or explicitly keep its old name:
+The default key read from an existing Secret also changed from `accessKey` to `accessKeyId`. Rename that Secret key or explicitly keep its old name in your existing values:
 
 ```yaml
 storage:

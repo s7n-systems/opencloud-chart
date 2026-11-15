@@ -46,6 +46,9 @@ metadata:
     {{- include "opencloud.annotations" (dict "specific" .Values.service.annotations "context" .) | nindent 4 }}
 spec:
   type: {{ .Values.service.type }}
+  {{- if and (eq .Values.service.type "LoadBalancer") .Values.service.loadBalancerClass }}
+  loadBalancerClass: {{ .Values.service.loadBalancerClass | quote }}
+  {{- end }}
   {{- with .Values.service.ipFamilyPolicy }}
   ipFamilyPolicy: {{ . }}
   {{- end }}

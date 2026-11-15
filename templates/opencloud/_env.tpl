@@ -50,6 +50,8 @@
   value: /etc/opencloud/csp.yaml
 - name: FRONTEND_CHECK_FOR_UPDATES
   value: {{ .Values.checkForUpdates | quote }}
+- name: FRONTEND_DISABLE_RADICALE
+  value: {{ not .Values.radicale.enabled | quote }}
 - name: FRONTEND_ARCHIVER_MAX_SIZE
   value: {{ .Values.archiverMaxSize | quote }}
 {{- with .Values.defaultLanguage }}
