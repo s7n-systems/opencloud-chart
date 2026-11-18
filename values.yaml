@@ -30,11 +30,11 @@ image:
   repository: "opencloudeu/opencloud-rolling"
   # -- Image tag, kept in sync with the digest by Renovate.
   # @default -- pinned, see values.yaml
-  tag: "9.1.0"
+  tag: "9.2.0"
   # -- Multi-arch index digest of the tag. Takes precedence over the tag;
   # clear it to float on the tag instead.
   # @default -- pinned, see values.yaml
-  digest: "sha256:f902f3cb5c247e3780dc133476c4c4f8d3377a638f15734d1d926c5f011c1fa7"
+  digest: "sha256:99698aea6bd88cf28004c773941cf69e2d24da136a3a45f9819b90b60506d14d"
   pullPolicy: "IfNotPresent"
   pullSecrets: []
 
