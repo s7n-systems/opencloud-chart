@@ -2,6 +2,12 @@
 
 Before an upgrade, back up config and data volumes, external service secrets and any S3 data. Test restoration. Review upstream application release notes as well as chart changes.
 
+## Chart 0.7.1: OpenCloud 9.2.0
+
+- **Image:** OpenCloud rolling 9.2.0, pinned by digest. Review the upstream [release notes](https://github.com/opencloud-eu/opencloud/releases/tag/v9.2.0), including Reva's workpackages merge and security fixes.
+- **Custom environment:** upstream removes the gateway create-home cache settings (`GATEWAY_CREATE_HOME_CACHE_*`). The chart does not set them; remove any custom overrides. New optional settings include `OC_CLAIM_MANAGED_SPACES_ENABLED`, `GRAPH_EXPORT_PERSONAL_DATA_RATE_LIMIT` and `OC_SPACE_IMAGE_THUMBNAILS_MAX_INPUT_IMAGE_FILE_SIZE`.
+- **Chart configuration:** no values or template changes are introduced by this release. Existing 9.1.0 deployments keep their configuration. Runtime upgrade and data compatibility still need validation in your environment.
+
 ## Chart 0.7.0: helm test, NOTES and scheduling options
 
 - **Radicale:** `radicale.enabled` now also controls whether OpenCloud advertises its CalDAV/CardDAV endpoints. It remains disabled by default, and the Keycloak/S3 example leaves it disabled too. Enable it explicitly if you use Radicale.
