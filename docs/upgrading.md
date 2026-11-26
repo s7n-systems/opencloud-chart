@@ -2,6 +2,13 @@
 
 Before an upgrade, back up config and data volumes, external service secrets and any S3 data. Test restoration. Review upstream application release notes as well as chart changes.
 
+## Chart 0.7.2: Radicale 3.9.2
+
+No steps are needed.
+
+- **Radicale:** updated from 3.9.0 to 3.9.2, bug fixes only for the chart's configuration (`http_x_remote_user` authentication, file system storage). `getctag` is now derived from the sync token, so CalDAV and CardDAV clients may resynchronise collections once after the upgrade. A custom `radicale.config` with LDAP over TLS now sends the server's hostname as SNI. See the [changelog](https://github.com/Kozea/Radicale/blob/master/CHANGELOG.md).
+- **Images:** Tika 4.2.0 pinned to a newer build of the same version.
+
 ## Chart 0.7.1: OpenCloud 9.2.0
 
 - **Image:** OpenCloud rolling 9.2.0, pinned by digest. Review the upstream [release notes](https://github.com/opencloud-eu/opencloud/releases/tag/v9.2.0), including Reva's workpackages merge and security fixes.

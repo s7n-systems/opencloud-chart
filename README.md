@@ -102,7 +102,7 @@ ingress:
 helm install opencloud . --namespace opencloud -f my-values.yaml
 ```
 
-Bitnami Common is vendored in `charts/`, so a checkout needs no dependency download. To install a published version, replace `.` with `oci://ghcr.io/s7n-systems/charts/opencloud` and add `--version 0.7.1`.
+Bitnami Common is vendored in `charts/`, so a checkout needs no dependency download. To install a published version, replace `.` with `oci://ghcr.io/s7n-systems/charts/opencloud` and add `--version 0.7.2`.
 
 The chart validates required settings and credential references during rendering. It cannot verify that Secrets exist, storage can be provisioned or external services are reachable. For an example with Keycloak, S3, SMTP and Collabora, see [examples/keycloak-s3.yaml](examples/keycloak-s3.yaml).
 
@@ -111,7 +111,7 @@ The chart validates required settings and credential references during rendering
 The release workflow signs published chart digests with cosign 3, which stores the signature as an OCI referrer in the new bundle format; verify with cosign 3 or newer (cosign 2 reports "no signatures found"):
 
 ```sh
-cosign verify ghcr.io/s7n-systems/charts/opencloud:0.7.1 \
+cosign verify ghcr.io/s7n-systems/charts/opencloud:0.7.2 \
   --certificate-identity-regexp '^https://github\.com/s7n-systems/opencloud-chart/\.github/workflows/release\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```

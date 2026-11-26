@@ -3,7 +3,7 @@ apiVersion: "v2"
 name: "opencloud"
 description: "Helm chart for OpenCloud, the file sync and share platform"
 type: "application"
-version: "0.7.1"
+version: "0.7.2"
 # Kept in step with image.tag in values.yaml.
 # renovate: image=docker.io/opencloudeu/opencloud-rolling
 appVersion: "9.2.0"
@@ -37,7 +37,7 @@ annotations:
   artifacthub.io/license: "Apache-2.0"
   artifacthub.io/category: "storage"
   artifacthub.io/prerelease: "false"
-  artifacthub.io/containsSecurityUpdates: "true"
+  artifacthub.io/containsSecurityUpdates: "false"
   artifacthub.io/links: |
     - name: "OpenCloud documentation"
       url: "https://docs.opencloud.eu"
@@ -49,13 +49,15 @@ annotations:
     - name: "yjs"
       image: "docker.io/opencloudeu/yjs:1.1.1@sha256:370ea8387e7896470b0c52d38769359ad5772d79a403d1bb5eb6d047b0789b35"
     - name: "radicale"
-      image: "docker.io/opencloudeu/radicale:v3.9.0@sha256:497d9a480bdbbbf8666e0bc4fc1298d71694571043d42c688f0b5597757f2dd2"
+      image: "docker.io/opencloudeu/radicale:v3.9.2@sha256:ce1a5eacefe2d65bda006d6be0d77561f0fabac4d9b25c6069bfe8e11a5ff7ab"
     - name: "tika"
-      image: "docker.io/apache/tika:4.2.0@sha256:b99f19c4fd76237dafe7d22f719b9bddfa9a449da687c597a41e2f6d9a595418"
+      image: "docker.io/apache/tika:4.2.0@sha256:0f0fbd7f053a2a9941b816ce6d6974493f5527f40c4d3491f9c2cecec30e612c"
   artifacthub.io/changes: |
-    - kind: "security"
-      description: "Update OpenCloud to 9.2.0, including Reva security fixes and Graph sharing fixes"
+    - kind: "changed"
+      description: "Update Radicale to 3.9.2: LDAP over TLS sends SNI, unique CalDAV/CardDAV getctag values and sharing fixes"
       links:
-        - name: "OpenCloud 9.2.0"
-          url: "https://github.com/opencloud-eu/opencloud/releases/tag/v9.2.0"
+        - name: "Radicale changelog"
+          url: "https://github.com/Kozea/Radicale/blob/master/CHANGELOG.md"
+    - kind: "changed"
+      description: "Tika 4.2.0 pinned to a newer build of the same version"
 ...

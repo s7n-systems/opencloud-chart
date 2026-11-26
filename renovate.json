@@ -60,11 +60,12 @@
       ]
     },
     {
-      "description": "Tool images run by the scripts and workflows, pinned as image:tag@digest.",
+      "description": "Tool and test images run by the scripts, workflows and e2e tests, pinned as image:tag@digest.",
       "customType": "regex",
       "managerFilePatterns": [
         "/^scripts/.+\\.sh$/",
-        "/^\\.github/workflows/.+\\.ya?ml$/"
+        "/^\\.github/workflows/.+\\.ya?ml$/",
+        "/^tests/e2e/.+\\.ya?ml$/"
       ],
       "matchStrings": [
         "(?<depName>(?:docker\\.io|ghcr\\.io|quay\\.io)/[a-z0-9._/-]+):(?<currentValue>[A-Za-z0-9._-]+)@(?<currentDigest>sha256:[a-f0-9]{64})"

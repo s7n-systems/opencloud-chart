@@ -597,11 +597,11 @@ radicale:
     repository: "opencloudeu/radicale"
     # -- Image tag, kept in sync with the digest by Renovate.
     # @default -- pinned, see values.yaml
-    tag: "v3.9.0"
+    tag: "v3.9.2"
     # -- Multi-arch index digest of the tag. Takes precedence over the tag;
     # clear it to float on the tag instead.
     # @default -- pinned, see values.yaml
-    digest: "sha256:497d9a480bdbbbf8666e0bc4fc1298d71694571043d42c688f0b5597757f2dd2"
+    digest: "sha256:ce1a5eacefe2d65bda006d6be0d77561f0fabac4d9b25c6069bfe8e11a5ff7ab"
     pullPolicy: "IfNotPresent"
     pullSecrets: []
   # -- Replaces the generated Radicale configuration file entirely when set.
@@ -682,7 +682,7 @@ tika:
     # -- Multi-arch index digest of the tag. Takes precedence over the tag;
     # clear it to float on the tag instead.
     # @default -- pinned, see values.yaml
-    digest: "sha256:b99f19c4fd76237dafe7d22f719b9bddfa9a449da687c597a41e2f6d9a595418"
+    digest: "sha256:0f0fbd7f053a2a9941b816ce6d6974493f5527f40c4d3491f9c2cecec30e612c"
     pullPolicy: "IfNotPresent"
     pullSecrets: []
   resources:
